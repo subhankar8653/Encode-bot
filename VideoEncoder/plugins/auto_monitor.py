@@ -42,7 +42,7 @@ from pyrogram import Client, filters, StopPropagation, ContinuePropagation
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
 
-from .. import LOGGER, app, owner, sudo_users, download_dir
+from .. import LOGGER, app, owner, sudo_users, download_dir, log
 from ..utils.database.access_db import db
 from ..utils.anime_api import fetch_anime_details
 
@@ -1147,6 +1147,27 @@ async def cmd_set_monitor(client: Client, message: Message):
 _add_anime_sessions: dict = {}
 
 
+async def _register_setpic_from_url(user_id: int, keyword: str, image_url: str) -> bool:
+    """
+    Update-post ke liye jo image (URL) use ho rahi hai, wahi image ko
+    Telegram pe upload karke uska file_id nikalo aur `/setpic <keyword>`
+    ki tarah save kar do — taaki us anime ki uploaded files ko bhi
+    automatically wahi thumbnail lag jaaye.
+
+    Photo ko LOG_CHANNEL pe silently bhejte hain sirf file_id lene ke liye.
+    """
+    if not image_url:
+        return False
+    try:
+        sent = await app.send_photo(log, photo=image_url)
+        file_id = sent.photo.file_id
+        await db.set_custompic(user_id, keyword, file_id)
+        return True
+    except Exception as e:
+        LOGGER.warning(f"[AddAnime] setpic auto-register failed for '{keyword}': {e}")
+        return False
+
+
 @Client.on_message(filters.command("add_anime") & filters.private)
 async def cmd_add_anime(client: Client, message: Message):
     """/add_anime — interactive flow shuru karo (Step 1/4: channel)."""
@@ -1247,17 +1268,25 @@ async def _add_anime_step_name(client: Client, message: Message, session: dict, 
         session["image"] = fetched.get("image", "")
         session["season"] = fetched.get("season")
         session["total_eps"] = fetched.get("total_eps", 0)
+        session["season_breakdown"] = fetched.get("season_breakdown", "")
 
         status_str = fetched.get("status") or "—"
         source = fetched.get("source", "TMDB")
+        season_breakdown = fetched.get("season_breakdown", "")
+        season_line = f"📚 Season-wise: {season_breakdown}\n" if season_breakdown else ""
+        eps_label = (
+            f"{fetched.get('total_eps', 0) or '—'} (Season {fetched.get('season')})"
+            if fetched.get("season") else f"{fetched.get('total_eps', 0) or '—'}"
+        )
         summary = (
             f"✅ **Details mil gaye!**\n\n"
             f"📺 {source} Match: **{fetched.get('matched_name')}**\n"
             f"📡 Status: {status_str}\n"
-            f"🎬 Total Episodes: {fetched.get('total_eps', 0) or '—'}\n"
+            f"🎬 Total Episodes: {eps_label}\n"
+            f"{season_line}"
             f"🎙 Audio: {fetched.get('audio')} _(default)_\n"
             f"🎭 Genres: {fetched.get('genres') or '—'}\n"
-            f"🖼 Poster: {'✅' if fetched.get('image') else '❌ nahi mila'}\n\n"
+            f"🖼 Poster: {'✅ (banner)' if fetched.get('image') else '❌ nahi mila'}\n\n"
             f"_Audio default \"Hindi ORG\" set hai — badalna ho toh `/update_post_list` se karo._"
         )
     else:
@@ -1266,6 +1295,7 @@ async def _add_anime_step_name(client: Client, message: Message, session: dict, 
         session["image"] = ""
         session["season"] = None
         session["total_eps"] = 0
+        session["season_breakdown"] = ""
         summary = (
             "⚠️ TMDB ya AniList pe is naam se koi match nahi mila.\n\n"
             "Anime add ho jaayega, audio default \"Hindi ORG\" set hoga, "
@@ -1365,6 +1395,12 @@ async def _finalize_add_anime(client: Client, message: Message, session: dict):
     }
     await _save_post_map(post_map)
 
+    # ── 2b) Wahi image `/setpic <anime_name>` ki tarah bhi save karo —
+    #        taaki is anime ki uploaded episode-files pe auto-thumbnail lage ──
+    setpic_saved = False
+    if image:
+        setpic_saved = await _register_setpic_from_url(message.from_user.id, anime_name, image)
+
     # ── 3) episode schedule (jo pehle /schedule karta tha) ──
     _get_schedule_list, _save_schedule_list = _get_schedule_list_fns()
     slist = await _get_schedule_list()
@@ -1385,16 +1421,27 @@ async def _finalize_add_anime(client: Client, message: Message, session: dict):
         "🖼 **Poster:** ✅ auto-fetched\n" if image
         else "🖼 **Poster:** ⚠️ nahi mila — `/update_post_list` se add karo\n"
     )
-    eps_str = f"{total_eps} episodes" if total_eps else "— (baad mein pata chalega)"
+    season_breakdown = session.get("season_breakdown", "")
+    if season:
+        eps_str = f"{total_eps} (Season {season})" if total_eps else "— (baad mein pata chalega)"
+    else:
+        eps_str = f"{total_eps} episodes" if total_eps else "— (baad mein pata chalega)"
+    season_line = f"📚 **Season-wise:** {season_breakdown}\n" if season_breakdown else ""
+    setpic_line = (
+        "📌 **Auto-Thumbnail:** ✅ `/setpic` mein bhi save ho gaya\n" if setpic_saved
+        else ("📌 **Auto-Thumbnail:** ⚠️ save nahi ho paaya — `/setpic " + anime_name + "` manually karo\n" if image else "")
+    )
     await message.reply(
         f"✅ **Anime Fully Added!**\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📺 **Anime:** {anime_name}\n"
         f"📢 **Channel:** {channel_title}\n"
         f"🎬 **Total Episodes:** {eps_str}\n"
+        f"{season_line}"
         f"🎙 **Audio:** {audio or 'Hindi ORG'}\n"
         f"🎭 **Genres:** {genres or '—'}\n"
         f"{image_line}"
+        f"{setpic_line}"
         f"📅 **Next Episode In:** {interval_days} din\n"
         f"🔗 **Link:** {channel_link or '—'}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"

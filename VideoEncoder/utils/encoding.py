@@ -872,7 +872,13 @@ def _add_thumb_username_band(image_path, text=DEFAULT_THUMB_BAND_TEXT):
         LOGGER.warning(f"Thumbnail username band failed: {e}")
 
 
-def get_thumbnail(in_filename, path, ttl):
+def get_thumbnail(in_filename, path, ttl, band_text=None):
+    """
+    band_text: agar diya gaya hai (e.g. '@BOBANIME'), thumbnail band pe
+    ye use hoga. Warna DEFAULT_THUMB_BAND_TEXT ('@SBANIME') fallback hai.
+    Caller /community-aware value pass kare toh yaha ke liye
+    utils.community.get_community_tag(user_id) use karo.
+    """
     out_filename = os.path.join(path, str(time.time()) + ".jpg")
     try:
         subprocess.run([
@@ -881,7 +887,7 @@ def get_thumbnail(in_filename, path, ttl):
         ], check=True, capture_output=True)
         if not os.path.isfile(out_filename):
             return None
-        _add_thumb_username_band(out_filename)
+        _add_thumb_username_band(out_filename, text=band_text or DEFAULT_THUMB_BAND_TEXT)
         return out_filename
     except Exception as e:
         LOGGER.warning(f"Thumbnail failed: {e}")

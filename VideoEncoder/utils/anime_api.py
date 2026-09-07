@@ -166,24 +166,57 @@ async def _fetch_from_tmdb(anime_name: str) -> Optional[dict]:
 
     details = await _tmdb_details(media_type, result.get("id")) or result
 
+    season = None
+    season_breakdown = ""
+
     if media_type == "tv":
         matched_name = details.get("name") or anime_name
-        total_eps = details.get("number_of_episodes") or 0
         status = _TMDB_STATUS_MAP.get(details.get("status") or "", "")
+
+        # ── Season-wise episode count — "Season 0" (Specials) exclude karo ──
+        seasons = [
+            s for s in (details.get("seasons") or [])
+            if (s.get("season_number") or 0) >= 1
+        ]
+        seasons.sort(key=lambda s: s.get("season_number") or 0)
+
+        if seasons:
+            season_breakdown = " | ".join(
+                f"S{s.get('season_number')}: {s.get('episode_count', 0)} eps"
+                for s in seasons
+            )
+            # Default: Season 1 ke episode count se monitoring start hoti hai
+            # (RTI zyaadatar S1 se hi anime add karta hai). Alag season monitor
+            # karna ho toh /schedule se total_eps manually adjust kar sakte ho.
+            season = seasons[0].get("season_number")
+            total_eps = seasons[0].get("episode_count", 0)
+        else:
+            season = None
+            total_eps = details.get("number_of_episodes") or 0
     else:
         matched_name = details.get("title") or anime_name
         total_eps = 1
         status = _TMDB_STATUS_MAP.get(details.get("status") or "", "")
 
+    # ── Image: backdrop (wide/landscape banner, jaisa detail-page pe dikhta
+    #    hai) — poster (portrait) sirf backdrop na milne par fallback ──
+    backdrop_path = details.get("backdrop_path")
     poster_path = details.get("poster_path")
+    image = ""
+    if backdrop_path:
+        image = f"{TMDB_IMAGE_BASE}{backdrop_path}"
+    elif poster_path:
+        image = f"{TMDB_IMAGE_BASE}{poster_path}"
+
     genres = ", ".join(g.get("name", "") for g in (details.get("genres") or []) if g.get("name"))
 
     return {
         "matched_name": matched_name,
-        "image": f"{TMDB_IMAGE_BASE}{poster_path}" if poster_path else "",
+        "image": image,
         "genres": genres,
         "audio": "Hindi ORG",
-        "season": None,
+        "season": season,
+        "season_breakdown": season_breakdown,
         "total_eps": total_eps,
         "status": status,
         "source": "TMDB",

@@ -18,11 +18,15 @@ Flow:
   5. Custom pic (existing custompic.py se auto-apply) + auto caption
 
 Commands:
-  /add_anime [channel_id] [Anime Name]   → Anime + channel link karo
-  /list_anime                            → Kya set hai dekho
-  /del_anime [number]                    → Remove karo
-  /set_monitor                           → Monitor channel set karo (forward reply ya ID)
-  /monitor_status                        → System health check
+  /add_anime            → 4-step interactive flow — channel, naam, API se
+                          auto-detail (season/episodes/poster/genres/audio),
+                          interval days, channel link. Anime + monitor +
+                          update-post + schedule sab EK saath set ho jaate hain.
+  /cancel_add_anime     → Beech mein /add_anime cancel karo
+  /list_anime           → Kya set hai dekho
+  /del_anime [number]   → Remove karo
+  /set_monitor          → Monitor channel set karo (forward reply ya ID)
+  /monitor_status       → System health check
 """
 
 import asyncio
@@ -34,12 +38,13 @@ import re
 import shutil
 import time
 
-from pyrogram import Client, filters
+from pyrogram import Client, filters, StopPropagation, ContinuePropagation
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.enums import ParseMode
 
 from .. import LOGGER, app, owner, sudo_users, download_dir
 from ..utils.database.access_db import db
+from ..utils.a501_client import fetch_anime_details, is_configured as _a501_configured
 
 # ─────────────────────────────────────────────
 #  Lazy imports (avoid circular on startup)
@@ -51,6 +56,14 @@ def _get_rti_fns():
 def _get_schedule_fn():
     from .schedule_notify import send_schedule_notification
     return send_schedule_notification
+
+def _get_update_post_fns():
+    from .update_channel import _get_post_map, _save_post_map
+    return _get_post_map, _save_post_map
+
+def _get_schedule_list_fns():
+    from .schedule_notify import _get_schedule_list, _save_schedule_list
+    return _get_schedule_list, _save_schedule_list
 
 # ─────────────────────────────────────────────
 #  Constants
@@ -1108,46 +1121,78 @@ async def cmd_set_monitor(client: Client, message: Message):
 
 
 # ─────────────────────────────────────────────
-#  /add_anime — Interactive 3-step flow
-#  Step 1: /add_anime [channel_id] [Anime Name]
-#  Step 2: Bot poochega hashtag (ya skip)
-#  Step 3: Bot poochega channel link (ya skip)
+#  /add_anime — Interactive 4-step flow (v2)
+#
+#  Step 1 (channel) : Channel ID bhejo YA channel ka koi bhi msg forward karo
+#  Step 2 (name)     : Anime ka poora/sahi naam do
+#                       → isi step ke andar A501 API se auto-fetch hota hai:
+#                         poster/thumbnail, genres, audio, latest season +
+#                         uske total episodes (koi extra step nahi lagta)
+#  Step 3 (interval) : Kitne din baad next episode aata hai
+#  Step 4 (link)     : Channel ka invite link (ya skip)
+#
+#  Finalize par teeno system ek saath save ho jaate hain:
+#    - anime_monitor_list   (RTI auto-monitor — jaisa pehle /add_anime karta tha)
+#    - update_post_map      (jaisa /update_post 5-step se save hota tha, bas
+#                             audio/genres/image ab API se auto-fill hote hain)
+#    - episode_schedule_list (jaisa /schedule karta tha)
 # ─────────────────────────────────────────────
 
-# { user_id: { 'step': 'hashtag'|'link', 'channel_id': int, 'channel_title': str, 'anime_name': str, 'hashtag': str } }
-# _add_anime_sessions removed — /add_anime is now a single-step command
+# { user_id: {
+#     'step': 'channel'|'name'|'interval'|'link',
+#     'channel_id', 'channel_title',
+#     'anime_name', 'audio', 'genres', 'image', 'season', 'total_eps',
+#     'interval_days', 'channel_link',
+# } }
+_add_anime_sessions: dict = {}
 
 
 @Client.on_message(filters.command("add_anime") & filters.private)
 async def cmd_add_anime(client: Client, message: Message):
-    """
-    /add_anime [channel_id] [Anime Name]
-
-    Example:
-      /add_anime -1001234567890 Fullmetal Alchemist: Brotherhood
-    """
+    """/add_anime — interactive flow shuru karo (Step 1/4: channel)."""
     if not _is_authorized(message.from_user.id):
         return
 
-    parts = message.text.split(None, 2)
+    user_id = message.from_user.id
+    _add_anime_sessions[user_id] = {"step": "channel"}
 
-    if len(parts) < 3:
-        await message.reply(
-            "**Usage:**\n"
-            "`/add_anime [channel_id] [Anime Name]`\n\n"
-            "**Example:**\n"
-            "`/add_anime -1001234567890 Fullmetal Alchemist: Brotherhood`\n\n"
-            "💡 Anime Name wahi likhna jo RTI post ya URL mein aata hai"
-        )
+    await message.reply(
+        "**Step 1/4 — Channel batao:**\n\n"
+        "Channel ki ID bhejo (`-100xxxxxxxxx`) *ya* us channel ka koi bhi "
+        "message yahan forward kar do.\n\n"
+        "_Cancel karna ho toh `/cancel_add_anime` bhejo._"
+    )
+
+
+@Client.on_message(filters.command("cancel_add_anime") & filters.private)
+async def cmd_cancel_add_anime(client: Client, message: Message):
+    if not _is_authorized(message.from_user.id):
         return
+    user_id = message.from_user.id
+    if _add_anime_sessions.pop(user_id, None):
+        await message.reply("❌ Cancelled.")
+    else:
+        await message.reply("Koi active `/add_anime` session nahi hai.")
 
-    try:
-        channel_id = int(parts[1])
-    except ValueError:
-        await message.reply("❌ Channel ID valid nahi! Format: `-100xxxxxxxxx`")
-        return
 
-    anime_name = parts[2].strip()
+# ── Step handlers ──────────────────────────────────────────────
+
+async def _add_anime_step_channel(client: Client, message: Message, session: dict, user_id: int):
+    channel_id = None
+
+    if message.forward_from_chat:
+        channel_id = message.forward_from_chat.id
+    else:
+        text = (message.text or "").strip()
+        try:
+            channel_id = int(text)
+        except ValueError:
+            await message.reply(
+                "⚠️ Channel ID samajh nahi aayi.\n\n"
+                "Channel ki ID do (`-100xxxxxxxxx`) ya us channel ka koi bhi "
+                "message yahan forward karo."
+            )
+            return
 
     try:
         chat = await client.get_chat(channel_id)
@@ -1166,34 +1211,248 @@ async def cmd_add_anime(client: Client, message: Message):
         await message.reply(f"❌ Admin check fail: `{e}`")
         return
 
-    anime_list = await _get_anime_list()
+    session["channel_id"] = channel_id
+    session["channel_title"] = channel_title
+    session["step"] = "name"
+    _add_anime_sessions[user_id] = session
 
+    await message.reply(
+        f"✅ Channel: **{channel_title}**\n\n"
+        f"**Step 2/4 — Anime ka poora aur bilkul sahi naam do:**\n\n"
+        f"_Isi naam se API se saari details (season, episodes, poster, "
+        f"genres, audio) auto-fetch hongi — isliye naam sahi likhna._\n\n"
+        f"**Example:** `Fullmetal Alchemist: Brotherhood`\n\n"
+        f"_Cancel karna ho toh `/cancel_add_anime` bhejo._"
+    )
+
+
+async def _add_anime_step_name(client: Client, message: Message, session: dict, user_id: int):
+    anime_name = (message.text or "").strip()
+    if not anime_name:
+        await message.reply("⚠️ Anime ka naam do.")
+        return
+
+    session["anime_name"] = anime_name
+
+    if not _a501_configured():
+        session["audio"] = ""
+        session["genres"] = ""
+        session["image"] = ""
+        session["season"] = None
+        session["total_eps"] = 0
+        await message.reply(
+            "⚠️ A501 API configure nahi hai (`A501_BACKEND_URL` / `A501_TOKEN` "
+            "config.env mein set nahi) — auto-detail skip kar raha hoon.\n\n"
+            "Anime add ho jaayega, poster/audio/genres baad mein "
+            "`/update_post_list` se manually bhar sakte ho."
+        )
+    else:
+        status_msg = await message.reply("🔎 API se anime ki details dhoondh raha hoon...")
+        try:
+            fetched = await fetch_anime_details(anime_name)
+        except Exception as e:
+            LOGGER.warning(f"[AddAnime] fetch_anime_details error: {e}")
+            fetched = None
+
+        if fetched:
+            session["audio"] = fetched.get("audio", "")
+            session["genres"] = fetched.get("genres", "")
+            session["image"] = fetched.get("image", "")
+            session["season"] = fetched.get("season")
+            session["total_eps"] = fetched.get("total_eps", 0)
+
+            season_str = f"Season {fetched.get('season')}" if fetched.get("season") else "—"
+            summary = (
+                f"✅ **Details mil gaye!**\n\n"
+                f"📺 API Match: **{fetched.get('matched_name')}**\n"
+                f"🎬 {season_str} — {fetched.get('total_eps', 0)} episodes\n"
+                f"🎙 Audio: {fetched.get('audio') or '—'}\n"
+                f"🎭 Genres: {fetched.get('genres') or '—'}\n"
+                f"🖼 Poster: {'✅' if fetched.get('image') else '❌ nahi mila'}"
+            )
+        else:
+            session["audio"] = ""
+            session["genres"] = ""
+            session["image"] = ""
+            session["season"] = None
+            session["total_eps"] = 0
+            summary = (
+                "⚠️ API pe is naam se koi match nahi mila.\n\n"
+                "Anime add ho jaayega, poster/audio/genres baad mein "
+                "`/update_post_list` se manually bhar sakte ho."
+            )
+
+        try:
+            await status_msg.edit(summary)
+        except Exception:
+            await message.reply(summary)
+
+    session["step"] = "interval"
+    _add_anime_sessions[user_id] = session
+
+    await message.reply(
+        f"**Step 3/4 — Kitne din baad next episode aata hai?**\n\n"
+        f"**Example:** `7`\n\n"
+        f"_Cancel karna ho toh `/cancel_add_anime` bhejo._"
+    )
+
+
+async def _add_anime_step_interval(client: Client, message: Message, session: dict, user_id: int):
+    text = (message.text or "").strip()
+    try:
+        interval_days = int(text)
+    except ValueError:
+        await message.reply("⚠️ Sirf number do, jaise `7`.")
+        return
+
+    session["interval_days"] = interval_days
+    session["step"] = "link"
+    _add_anime_sessions[user_id] = session
+
+    await message.reply(
+        f"✅ Interval: **{interval_days} din**\n\n"
+        f"**Step 4/4 — Channel ka invite link do** "
+        f"(update-post ke \"Watch & Download\" button ke liye):\n\n"
+        f"**Example:** `https://t.me/+xxxxxxxxxx`\n\n"
+        f"_Nahi dena toh `skip` likho._"
+    )
+
+
+async def _add_anime_step_link(client: Client, message: Message, session: dict, user_id: int):
+    text = (message.text or "").strip()
+    if text.lower() == "skip":
+        channel_link = ""
+    elif not text.startswith("http"):
+        await message.reply("⚠️ Valid link do (`https://t.me/...`) ya `skip` likho.")
+        return
+    else:
+        channel_link = text
+
+    session["channel_link"] = channel_link
+    _add_anime_sessions.pop(user_id, None)
+    await _finalize_add_anime(client, message, session)
+
+
+async def _finalize_add_anime(client: Client, message: Message, session: dict):
+    """Session complete — anime_monitor_list + update_post_map +
+    episode_schedule_list, teeno ek saath save karo."""
+    channel_id = session["channel_id"]
+    channel_title = session["channel_title"]
+    anime_name = session["anime_name"]
+    channel_link = session.get("channel_link", "")
+    interval_days = session.get("interval_days", 0)
+    audio = session.get("audio", "")
+    genres = session.get("genres", "")
+    image = session.get("image", "")
+    season = session.get("season")
+    total_eps = session.get("total_eps", 0)
+
+    # ── 1) RTI auto-monitor list ──
+    anime_list = await _get_anime_list()
     for entry in anime_list:
         if (entry.get('channel_id') == channel_id and
                 entry.get('anime_name', '').lower() == anime_name.lower()):
-            await message.reply(f"⚠️ Already exists!\n\n📺 **{anime_name}** → `{channel_title}`")
+            await message.reply(f"⚠️ Ye already monitor list mein hai!\n\n📺 **{anime_name}** → `{channel_title}`")
             return
-
-    # Seedha save karo — no extra steps needed
-    anime_list = await _get_anime_list()
     anime_list.append({
         'channel_id':    channel_id,
         'channel_title': channel_title,
         'anime_name':    anime_name,
         'hashtag':       '',
-        'channel_link':  '',
+        'channel_link':  channel_link,
     })
     await _save_anime_list(anime_list)
 
+    # ── 2) update_post_map entry (jo pehle /update_post 5-step karta tha) ──
+    _get_post_map, _save_post_map = _get_update_post_fns()
+    post_map = await _get_post_map()
+    post_map[anime_name.lower().strip()] = {
+        "display_name": anime_name,
+        "invite_link":  channel_link,
+        "audio":        audio,
+        "genres":       genres,
+        "image":        image,
+    }
+    await _save_post_map(post_map)
+
+    # ── 3) episode schedule (jo pehle /schedule karta tha) ──
+    _get_schedule_list, _save_schedule_list = _get_schedule_list_fns()
+    slist = await _get_schedule_list()
+    for entry in slist:
+        if _normalize(entry.get('anime_name', '')) == _normalize(anime_name):
+            entry['interval_days'] = interval_days
+            entry['total_eps'] = total_eps
+            break
+    else:
+        slist.append({
+            'anime_name':     anime_name,
+            'interval_days':  interval_days,
+            'total_eps':      total_eps,
+        })
+    await _save_schedule_list(slist)
+
+    season_str = f"Season {season}" if season else "—"
+    image_line = (
+        "🖼 **Poster:** ✅ auto-fetched\n" if image
+        else "🖼 **Poster:** ⚠️ nahi mila — `/update_post_list` se add karo\n"
+    )
     await message.reply(
-        f"✅ **Anime Added!**\n\n"
+        f"✅ **Anime Fully Added!**\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📺 **Anime:** {anime_name}\n"
         f"📢 **Channel:** {channel_title}\n"
+        f"🎬 **{season_str}** — {total_eps} episodes\n"
+        f"🎙 **Audio:** {audio or '—'}\n"
+        f"🎭 **Genres:** {genres or '—'}\n"
+        f"{image_line}"
+        f"📅 **Next Episode In:** {interval_days} din\n"
+        f"🔗 **Link:** {channel_link or '—'}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"Ab jab bhi RTI pe `{anime_name}` ka post aayega,\n"
-        f"bot automatically download + upload karega! \U0001f680"
+        f"Monitor + Update Post + Schedule — teeno set ho gaye! \U0001f680"
     )
+
+
+# ── Session router — sabse pehle chalta hai, apni session na ho toh
+#    aage baaki handlers ke liye chhod deta hai ──
+@Client.on_message(filters.private, group=0)
+async def add_anime_flow_router(client: Client, message: Message):
+    if not message.from_user:
+        raise ContinuePropagation
+
+    user_id = message.from_user.id
+    session = _add_anime_sessions.get(user_id)
+    if not session or not _is_authorized(user_id):
+        raise ContinuePropagation
+
+    text = (message.text or "").strip()
+
+    if text.lower() in ("/cancel_add_anime", "cancel"):
+        _add_anime_sessions.pop(user_id, None)
+        await message.reply("❌ Cancelled.")
+        raise StopPropagation
+
+    # Channel-forward step ke alawa har jagah text chahiye hota hai —
+    # agar user beech mein koi aur command chala de toh session drop karo.
+    if text.startswith("/"):
+        _add_anime_sessions.pop(user_id, None)
+        raise ContinuePropagation
+
+    step = session.get("step")
+
+    if step == "channel":
+        await _add_anime_step_channel(client, message, session, user_id)
+        raise StopPropagation
+    if step == "name":
+        await _add_anime_step_name(client, message, session, user_id)
+        raise StopPropagation
+    if step == "interval":
+        await _add_anime_step_interval(client, message, session, user_id)
+        raise StopPropagation
+    if step == "link":
+        await _add_anime_step_link(client, message, session, user_id)
+        raise StopPropagation
+
+    raise ContinuePropagation
 
 
 
@@ -1331,7 +1590,7 @@ async def _show_list_anime_panel(client: Client, event, user_id: int, page: int,
         text = (
             f"📡 <b>Monitor Channel:</b> {mc_text}\n\n"
             f"📋 Koi anime registered nahi hai!\n\n"
-            f"Add karo: <code>/add_anime [channel_id] [Anime Name]</code>"
+            f"Add karo: <code>/add_anime</code>"
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Close", callback_data="closeMeh")]])
         if is_new:

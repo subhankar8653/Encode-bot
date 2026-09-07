@@ -351,3 +351,24 @@ async def fetch_anime_details(anime_name: str):
 
     LOGGER.info(f"[AnimeAPI] Falling back to AniList for '{anime_name}'")
     return await _fetch_from_anilist(anime_name)
+
+
+async def download_image(url: str, dest_path: str) -> bool:
+    """
+    URL (TMDB poster/backdrop ya AniList cover) download karke dest_path
+    pe save karo. Auto-thumbnail feature (thumb_source.py) ke liye.
+    """
+    if not url:
+        return False
+    try:
+        client = await _get_client()
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            LOGGER.warning(f"[AnimeAPI] Image download HTTP {resp.status_code}: {url}")
+            return False
+        with open(dest_path, "wb") as f:
+            f.write(resp.content)
+        return True
+    except Exception as e:
+        LOGGER.warning(f"[AnimeAPI] Image download failed: {e}")
+        return False

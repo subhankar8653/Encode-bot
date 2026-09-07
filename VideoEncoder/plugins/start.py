@@ -48,6 +48,37 @@ async def help_message(app, message):
     if not c:
         return
     await AddUserToDatabase(app, message)
+
+    if not await get_encode_mode():
+        msg = """<b>📕 Commands List</b>:
+
+- Yeh ek auto upload bot hai (encode mode off hai).
+- /stats - cpu stats
+
+For Sudo:
+- /exec - Execute Python
+- /sh - Execute Shell
+- /vupload - video upload
+- /dupload - doc upload
+- /gupload - drive upload
+- /update - git pull
+- /restart - restart bot
+- /clean - clean junk
+- /clear - clean queue
+- /logs - view logs
+
+For Owner:
+- /addchat and /addsudo
+- /rmsudo and /rmchat
+- /update_channel - Update channel add karo
+- /update_channel_list - Update channels dekho
+- /delete_update_channel - Update channel remove karo
+- /update_post - Anime invite link save karo
+
+Supports: <a href='https://t.me/sbanime'>click here</a>"""
+        await message.reply(text=msg, disable_web_page_preview=True)
+        return
+
     msg = """<b>📕 Commands List</b>:
 
 - Autodetect Telegram File.

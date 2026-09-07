@@ -8,6 +8,7 @@ from .. import data, video_mimetype
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.helper import check_chat
 from ..utils.tasks import handle_tasks
+from .encode_mode import get_encode_mode
 
 
 @Client.on_message(filters.command('dl'))
@@ -90,6 +91,10 @@ async def batch_encode(app, message):
 async def auto_encode(app, message):
     # Channel messages have no from_user — skip silently
     if not message.from_user:
+        return
+    # Encode mode OFF — bot sirf auto-upload bot hai, forward/bhejo hui
+    # video/document ko encode nahi karega.
+    if not await get_encode_mode():
         return
     # Check mimetype for documents
     if message.document:

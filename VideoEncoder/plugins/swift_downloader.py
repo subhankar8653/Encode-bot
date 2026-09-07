@@ -27,10 +27,10 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from bs4 import BeautifulSoup
 
-from .. import LOGGER, download_dir, app
+from .. import LOGGER, download_dir, app, log
 from ..utils.helper import check_chat
 from ..utils.uploads.telegram import upload_video, _make_uploader_client
-from ..utils.encoding import get_duration, get_thumbnail, get_width_height
+from ..utils.encoding import get_duration, get_thumbnail, get_width_height, _add_thumb_username_band
 from ..utils.auto_caption import build_auto_caption
 from ..utils.database.access_db import db
 from ..plugins.custompic import get_custompic_for_file
@@ -828,10 +828,24 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
             thumb = get_thumbnail(filepath, dl_dir, duration / 4 if duration else 0)
             custom_thumb_used = False
 
-        # cover = file_id (Telegram file_id) — local path nahi!
-        # thumb (local path) = gallery preview thumbnail
+        # Custom thumb (custompic/personal) pe bhi default username-band lagao —
+        # get_thumbnail() ke andar auto-generated frame pe already lag chuka hota hai,
+        # yahan sirf custom_thumb_used == True wale case ko cover karna hai.
+        # Local file pe band laga ke fresh Telegram file_id nikalte hain (log channel
+        # pe silently bhej ke) taaki 'cover' ke liye bhi banded copy use ho, na ki
+        # DB mein saved original (bina-band) file_id.
+        cover = None
+        if custom_thumb_id and custom_thumb_used and thumb:
+            try:
+                _add_thumb_username_band(thumb)
+                _sent_thumb = await app.send_photo(log, photo=thumb)
+                cover = _sent_thumb.photo.file_id
+            except Exception as e:
+                LOGGER.warning(f"[Swift] Banded cover upload failed, falling back: {e}")
+                cover = custom_thumb_id
+
         # cover (file_id) = video player background cover pic
-        cover = custom_thumb_id if custom_thumb_id and custom_thumb_used else None
+        # thumb (local path) = gallery preview thumbnail
         width, height = get_width_height(filepath)
         caption = f"<b>{fname}</b>"
         disk_fname = os.path.basename(filepath)

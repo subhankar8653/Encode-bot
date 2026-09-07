@@ -17,6 +17,7 @@ from ..utils.database.access_db import db
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.display_progress import TimeFormatter, humanbytes
 from ..utils.helper import check_chat, delete_downloads, start_but
+from .encode_mode import get_encode_mode
 
 SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
@@ -32,6 +33,11 @@ async def start_message(app, message):
     if not c:
         return
     await AddUserToDatabase(app, message)
+
+    if not await get_encode_mode():
+        await message.reply(text="Yeh ek auto upload bot hai!")
+        return
+
     text = f"Hi {message.from_user.mention()}<a href='https://ibb.co/RGx4RmDg'>!</a> I'm VideoEncoder Bot which will do magic with your file."
     await message.reply(text=text, reply_markup=start_but)
 

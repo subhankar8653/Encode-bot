@@ -11,6 +11,7 @@ from .. import download_dir, sudo_users
 from ..utils.community import get_community_tag
 from ..utils.encoding import get_duration, get_thumbnail, get_width_height
 from ..utils.helper import check_chat
+from ..utils.thumb_source import get_tmdb_thumbnail
 from ..utils.uploads.drive.upload import Uploader
 from ..utils.uploads.telegram import upload_doc, upload_video
 
@@ -50,7 +51,9 @@ async def videoupload(client, message):
     filename = os.path.basename(file)
     duration = get_duration(file)
     band_text = await get_community_tag(message.from_user.id)
-    thumb = get_thumbnail(file, download_dir, duration / 4, band_text=band_text)
+    thumb = await get_tmdb_thumbnail(file, download_dir, band_text=band_text)
+    if not thumb:
+        thumb = get_thumbnail(file, download_dir, duration / 4, band_text=band_text)
     width, height = get_width_height(file)
     text = f'Uploading {html.escape(file)}...'
     reply = await message.reply_text(text)

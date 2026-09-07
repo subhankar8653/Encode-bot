@@ -97,13 +97,21 @@ async def _save_anime_list(anime_list: list):
     await db.col.update_one({'id': oid}, {'$set': {'anime_monitor_list': anime_list}}, upsert=True)
 
 
+DEFAULT_MONITOR_CHANNEL_ID = -1003950952828
+
+
 async def _get_monitor_channel() -> int | None:
+    """
+    Monitor channel ID lo. Agar owner ne /set_monitor se kabhi apna
+    channel set nahi kiya, toh DEFAULT_MONITOR_CHANNEL_ID use hota hai
+    (pehle se hi ek channel monitor ke liye ready rehta hai).
+    """
     oid = await _owner_id()
     if not oid:
-        return None
+        return DEFAULT_MONITOR_CHANNEL_ID
     user = await db._get_user(oid)
     val = user.get('monitor_channel_id')
-    return int(val) if val else None
+    return int(val) if val else DEFAULT_MONITOR_CHANNEL_ID
 
 
 async def _save_monitor_channel(channel_id: int):

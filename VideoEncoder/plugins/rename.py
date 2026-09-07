@@ -251,6 +251,7 @@ async def _upload_renamed_file(bot: Client, filepath: str, new_filename: str, ex
     saved default thumbnail (/setpic ya /thumb) apply karke."""
     from ..utils.encoding import get_duration, get_thumbnail, get_width_height
     from ..utils.community import get_community_tag
+    from ..utils.thumb_source import get_tmdb_thumbnail
 
     caption = f"<b>{new_filename}</b>"
     custom_thumb = await db.get_thumbnail(user_id)
@@ -267,7 +268,9 @@ async def _upload_renamed_file(bot: Client, filepath: str, new_filename: str, ex
                 )
             else:
                 band_text = await get_community_tag(user_id)
-                thumb_path = get_thumbnail(filepath, download_dir, duration / 4 if duration else 0, band_text=band_text)
+                thumb_path = await get_tmdb_thumbnail(filepath, download_dir, band_text=band_text)
+                if not thumb_path:
+                    thumb_path = get_thumbnail(filepath, download_dir, duration / 4 if duration else 0, band_text=band_text)
             width, height = get_width_height(filepath) or (0, 0)
 
             await bot.send_video(

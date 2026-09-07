@@ -40,6 +40,7 @@ from ..utils.database.access_db import db
 from ..utils.helper import check_chat
 from ..utils.community import get_community_tag
 from ..utils.encoding import get_duration, get_thumbnail, get_width_height
+from ..utils.thumb_source import get_tmdb_thumbnail
 from ..utils.display_progress import progress_for_pyrogram
 
 
@@ -391,7 +392,9 @@ async def saveget(client: Client, message: Message):
         if msg_obj.video:
             duration = get_duration(file_path)
             band_text = await get_community_tag(message.from_user.id)
-            thumb = get_thumbnail(file_path, dl_dir, duration / 4 if duration else 0, band_text=band_text)
+            thumb = await get_tmdb_thumbnail(file_path, dl_dir, band_text=band_text)
+            if not thumb:
+                thumb = get_thumbnail(file_path, dl_dir, duration / 4 if duration else 0, band_text=band_text)
             width, height = get_width_height(file_path)
 
             await app.send_video(

@@ -34,6 +34,7 @@ from ..utils.encoding import get_duration, get_thumbnail, get_width_height, _add
 from ..utils.auto_caption import build_auto_caption
 from ..utils.community import get_community_tag
 from ..utils.database.access_db import db
+from ..utils.thumb_source import get_tmdb_thumbnail
 from ..plugins.custompic import get_custompic_for_file
 
 try:
@@ -829,7 +830,9 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
 
         if not thumb:
             band_text = await get_community_tag(user_id)
-            thumb = get_thumbnail(filepath, dl_dir, duration / 4 if duration else 0, band_text=band_text)
+            thumb = await get_tmdb_thumbnail(filepath, dl_dir, band_text=band_text)
+            if not thumb:
+                thumb = get_thumbnail(filepath, dl_dir, duration / 4 if duration else 0, band_text=band_text)
             custom_thumb_used = False
 
         # Custom thumb (custompic/personal) pe bhi default username-band lagao —

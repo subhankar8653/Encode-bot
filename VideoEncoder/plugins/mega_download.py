@@ -22,6 +22,7 @@ from .. import app, download_dir, encode_dir
 from ..utils.database.access_db import db
 from ..utils.uploads import upload_worker
 from ..utils.auto_caption import build_auto_caption
+from ..utils.community import get_community_tag
 from ..utils.helper import handle_encode
 
 
@@ -200,7 +201,8 @@ async def mega_handler(client: Client, message: Message):
     fname = os.path.basename(filepath)
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
     resolution = 'OG'
-    caption = build_auto_caption(filepath, resolution=resolution)
+    channel = await get_community_tag(message.from_user.id)
+    caption = build_auto_caption(filepath, resolution=resolution, channel=channel)
     proper_filename = re.sub(r'[<>:"/\\|?*]', '', caption).strip()
 
     await msg.edit(
@@ -271,7 +273,8 @@ async def meganow_handler(client: Client, message: Message):
     fname = os.path.basename(filepath)
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
     resolution = 'OG'
-    caption = build_auto_caption(filepath, resolution=resolution)
+    channel = await get_community_tag(message.from_user.id)
+    caption = build_auto_caption(filepath, resolution=resolution, channel=channel)
     proper_filename = re.sub(r'[<>:"/\\|?*]', '', caption).strip()
 
     await msg.edit(

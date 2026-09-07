@@ -4,11 +4,11 @@ encode_mode.py
 Global ON/OFF switch — bot ka overall behaviour control karta hai:
 
   /encode_mode          → current status dekho
-  /encode_mode on       → (default) full VideoEncoder bot — /start pe
+  /encode_mode on       → full VideoEncoder bot — /start pe
                           normal welcome + Settings button aata hai,
                           sara existing feature-set jaisa abhi hai
                           waisa hi kaam karta hai.
-  /encode_mode off      → auto-upload-bot-only mode:
+  /encode_mode off      → (default) auto-upload-bot-only mode:
                             - /start sirf "Yeh ek auto upload bot hai!"
                               bolega, Settings button nahi aayega
                             - video/document bhejte hi seedha encode
@@ -17,6 +17,7 @@ Global ON/OFF switch — bot ka overall behaviour control karta hai:
 
 Bot-wide toggle hai (col2 mein save hota hai) — sabhi users ke liye
 same, per-user nahi. Sirf owner/sudo command chala sakte hain.
+Naya deployment ya fresh DB hamesha OFF se start hota hai.
 """
 
 import logging
@@ -35,11 +36,11 @@ def _is_auth(user_id: int) -> bool:
 
 
 async def get_encode_mode() -> bool:
-    """True = ON (default, full VideoEncoder features), False = OFF (auto-upload bot only)."""
+    """True = ON (full VideoEncoder features), False = OFF (auto-upload bot only, default)."""
     doc = await db.col2.find_one({'id': 'encode_mode'})
     if not doc:
-        return True
-    return doc.get('enabled', True)
+        return False
+    return doc.get('enabled', False)
 
 
 async def _set_encode_mode(enabled: bool):

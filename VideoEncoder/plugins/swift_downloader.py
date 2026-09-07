@@ -32,6 +32,7 @@ from ..utils.helper import check_chat
 from ..utils.uploads.telegram import upload_video, _make_uploader_client
 from ..utils.encoding import get_duration, get_thumbnail, get_width_height, _add_thumb_username_band
 from ..utils.auto_caption import build_auto_caption
+from ..utils.community import get_community_tag
 from ..utils.database.access_db import db
 from ..plugins.custompic import get_custompic_for_file
 
@@ -264,7 +265,7 @@ def _in_progress(dl_dir: str) -> list:
 # ─────────────────────────────────────────────
 #  Auto rename — mega jaise
 # ─────────────────────────────────────────────
-async def _auto_rename(filepath: str, dl_dir: str) -> str:
+async def _auto_rename(filepath: str, dl_dir: str, user_id: int = None) -> str:
     """
     build_auto_caption se proper naam banao aur ffmpeg se metadata SET karo.
     - title tag = clean filename (external player mein dikhega)
@@ -275,7 +276,9 @@ async def _auto_rename(filepath: str, dl_dir: str) -> str:
     quality = _quality_from(os.path.basename(filepath))
     resolution = quality.replace("p", "") if quality != "unknown" else "OG"
 
-    caption = build_auto_caption(filepath, resolution=resolution if resolution != "OG" else None)
+    channel = await get_community_tag(user_id) if user_id else "@SBANIME"
+    caption = build_auto_caption(filepath, resolution=resolution if resolution != "OG" else None,
+                                  channel=channel)
     # proper_filename: spaces rakho, sirf illegal chars hatao
     proper_filename = re.sub(r'[<>:"/\\|?*]', '', caption).strip()
 
@@ -764,7 +767,7 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
         f"💾 `{size_mb:.1f} MB`"
     )
 
-    filepath = await _auto_rename(filepath, dl_dir)
+    filepath = await _auto_rename(filepath, dl_dir, user_id=message.from_user.id)
     fname = os.path.basename(filepath)
     quality = _quality_from(fname)
 
@@ -825,7 +828,8 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
                 LOGGER.warning(f"[Swift] Thumb download error: {e}, using auto-thumb")
 
         if not thumb:
-            thumb = get_thumbnail(filepath, dl_dir, duration / 4 if duration else 0)
+            band_text = await get_community_tag(user_id)
+            thumb = get_thumbnail(filepath, dl_dir, duration / 4 if duration else 0, band_text=band_text)
             custom_thumb_used = False
 
         # Custom thumb (custompic/personal) pe bhi default username-band lagao —
@@ -837,7 +841,8 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
         cover = None
         if custom_thumb_id and custom_thumb_used and thumb:
             try:
-                _add_thumb_username_band(thumb)
+                band_text = await get_community_tag(user_id)
+                _add_thumb_username_band(thumb, text=band_text)
                 _sent_thumb = await app.send_photo(log, photo=thumb)
                 cover = _sent_thumb.photo.file_id
             except Exception as e:

@@ -8,6 +8,7 @@ from pyrogram import Client, filters
 from pyrogram.errors.exceptions.bad_request_400 import MessageIdInvalid
 
 from .. import download_dir, sudo_users
+from ..utils.community import get_community_tag
 from ..utils.encoding import get_duration, get_thumbnail, get_width_height
 from ..utils.helper import check_chat
 from ..utils.uploads.drive.upload import Uploader
@@ -48,7 +49,8 @@ async def videoupload(client, message):
         return
     filename = os.path.basename(file)
     duration = get_duration(file)
-    thumb = get_thumbnail(file, download_dir, duration / 4)
+    band_text = await get_community_tag(message.from_user.id)
+    thumb = get_thumbnail(file, download_dir, duration / 4, band_text=band_text)
     width, height = get_width_height(file)
     text = f'Uploading {html.escape(file)}...'
     reply = await message.reply_text(text)

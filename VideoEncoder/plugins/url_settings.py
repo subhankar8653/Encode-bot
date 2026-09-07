@@ -15,6 +15,7 @@ from pyrogram.types import (
 )
 
 from .. import LOGGER
+from ..utils.community import get_community_tag, get_community_title
 from ..utils.database.access_db import db
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.helper import check_chat, output
@@ -406,10 +407,11 @@ async def setmeta_callbacks(bot: Client, cb: CallbackQuery):
         if cb.from_user.id != owner_id:
             await cb.answer("❌ Ye tumhara nahi hai!", show_alert=True)
             return
+        community_title = await get_community_title(owner_id)
         await db.set_full_metadata(owner_id, {
             "enabled": True,
             "movie_name": "",
-            "video_title": "Sbanime",
+            "video_title": community_title,
             "audio_title": "{audiolang}",
             "subtitle_title": "{sublang}",
             "comment": "",
@@ -443,11 +445,11 @@ async def setmeta_callbacks(bot: Client, cb: CallbackQuery):
             "comment":        "💬 Comment / Description",
         }
         field_hints = {
-            "video_title":    "e.g. <code>Sbanime</code>",
+            "video_title":    f"e.g. <code>{await get_community_title(owner_id)}</code>",
             "audio_title":    "e.g. <code>{audiolang}</code> ya <code>Hindi</code>",
             "subtitle_title": "e.g. <code>{sublang}</code> ya <code>English</code>",
             "movie_name":     "e.g. <code>FULLMETAL ALCHEMIST S01E01 in Hindi</code>",
-            "comment":        "e.g. <code>@SBANIME</code>",
+            "comment":        f"e.g. <code>{await get_community_tag(owner_id)}</code>",
         }
 
         if field_key not in field_labels:

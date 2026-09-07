@@ -4,6 +4,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 from .. import all
+from ..utils.community import get_community_name
 from ..utils.database.access_db import db
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.helper import check_chat, output
@@ -183,7 +184,7 @@ async def settings_viewer(bot: Client, event: Message):
     
     m = await db.get_metadata_w(user_id)
     if m:
-        metadata = 'sbanime'
+        metadata = await get_community_name(user_id)
     else:
         metadata = 'change session!'
     

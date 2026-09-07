@@ -30,6 +30,7 @@ from pyrogram.types import (
 )
 
 from .. import LOGGER, data, download_dir, encode_dir
+from ..utils.community import get_community_name, get_community_tag
 from ..utils.database.access_db import db
 from ..utils.database.add_user import AddUserToDatabase
 from ..utils.direct_link_generator import direct_link_generator
@@ -810,9 +811,10 @@ async def url_upload_callbacks(bot: Client, cb: CallbackQuery):
         await cb.answer()
         swap_rules = await db.get_swap(owner_id)
         if not swap_rules:
+            example_name = await get_community_name(owner_id)
             await msg.edit(
                 "⚠️ <b>Name swap rules not set!</b>\n\n"
-                "Use: <code>/addswap toonweb sbanime</code>\n"
+                f"Use: <code>/addswap toonweb {example_name}</code>\n"
                 "Multiple rules: send one by one.\n\n"
                 "Current rules: None",
                 reply_markup=InlineKeyboardMarkup([[
@@ -1210,7 +1212,7 @@ async def addswap_text_input(bot: Client, message: Message):
             "<b>➕ New Swap Rule — Step 2/2</b>\n\n"
             f"Find text: <code>{text}</code>\n\n"
             "Ab <b>replacement text</b> bhejo (naya text kya hoga).\n\n"
-            "<b>Example:</b> <code>@SBANIME</code>\n\n"
+            f"<b>Example:</b> <code>{await get_community_tag(user_id)}</code>\n\n"
             "<i>Send <code>-</code> (dash) to cancel.</i>",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("⬅️ Back", callback_data=f"asw_back_{user_id}")
@@ -2353,6 +2355,7 @@ async def _do_upload(bot: Client, filepath: str, message: Message, msg: Message,
     """
     import re as _re
     from ..utils.auto_caption import smart_caption
+    from ..utils.community import get_community_tag
     await msg.edit("<b>📤 Uploading...</b>")
     renamed_path = None
     try:
@@ -2362,10 +2365,12 @@ async def _do_upload(bot: Client, filepath: str, message: Message, msg: Message,
         # Warna agar user ne /setres 480 set kiya hua hai toh 1080p video bhi
         # "480p" caption ke saath upload hogi — jo GALAT hai.
         user_blacklist = await db.get_blacklist(message.from_user.id)
+        caption_channel = await get_community_tag(message.from_user.id)
         caption = smart_caption(
             original_caption=os.path.basename(filepath),
             filepath=filepath,
             resolution=None,   # FIX: metadata se actual quality detect karo
+            channel=caption_channel,
             has_eng_sub=has_eng_sub,
             blacklist=user_blacklist,
         )

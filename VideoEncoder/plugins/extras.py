@@ -1,12 +1,14 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from ..utils.community import get_community_tag
 from ..utils.database.access_db import db
 
 
 @Client.on_message(filters.command("swap"))
 async def set_swap(client, message: Message):
     if len(message.command) < 2:
-        await message.reply("Usage:\n/swap old1:new1|old2:new2\n\nExample:\n/swap toonworld.com:@SBANIME|raretoon.com:@SBANIME")
+        example_tag = await get_community_tag(message.from_user.id)
+        await message.reply(f"Usage:\n/swap old1:new1|old2:new2\n\nExample:\n/swap toonworld.com:{example_tag}|raretoon.com:{example_tag}")
         return
     raw = " ".join(message.command[1:])
     rules = {}

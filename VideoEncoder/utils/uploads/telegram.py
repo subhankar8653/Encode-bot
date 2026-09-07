@@ -13,6 +13,7 @@ from ..auto_caption import smart_caption
 from ..community import get_community_tag
 from ..display_progress import progress_for_pyrogram
 from ..encoding import get_duration, get_thumbnail, get_width_height
+from ..thumb_source import get_tmdb_thumbnail
 
 
 # ─────────────────────────────────────────────
@@ -272,7 +273,9 @@ async def upload_to_tg(new_file, message, msg, resolution='480'):
         )
     else:
         band_text = await get_community_tag(message.from_user.id)
-        thumb = get_thumbnail(new_file, download_dir, duration / 4, band_text=band_text)
+        thumb = await get_tmdb_thumbnail(new_file, download_dir, band_text=band_text)
+        if not thumb:
+            thumb = get_thumbnail(new_file, download_dir, duration / 4, band_text=band_text)
 
     width, height = get_width_height(new_file)
 
@@ -590,7 +593,9 @@ async def _upload_to_user_channels(
                 )
             else:
                 band_text = await get_community_tag(user_id)
-                thumb = get_thumbnail(new_file, download_dir, duration / 4, band_text=band_text)
+                thumb = await get_tmdb_thumbnail(new_file, download_dir, band_text=band_text)
+                if not thumb:
+                    thumb = get_thumbnail(new_file, download_dir, duration / 4, band_text=band_text)
 
             needs_filter = languages.strip().lower() != 'all'
 

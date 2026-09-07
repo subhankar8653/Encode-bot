@@ -1234,7 +1234,7 @@ async def _add_anime_step_name(client: Client, message: Message, session: dict, 
 
     session["anime_name"] = anime_name
 
-    status_msg = await message.reply("🔎 AniList se anime ki details dhoondh raha hoon...")
+    status_msg = await message.reply("🔎 TMDB se anime ki details dhoondh raha hoon...")
     try:
         fetched = await fetch_anime_details(anime_name)
     except Exception as e:
@@ -1249,9 +1249,10 @@ async def _add_anime_step_name(client: Client, message: Message, session: dict, 
         session["total_eps"] = fetched.get("total_eps", 0)
 
         status_str = fetched.get("status") or "—"
+        source = fetched.get("source", "TMDB")
         summary = (
             f"✅ **Details mil gaye!**\n\n"
-            f"📺 AniList Match: **{fetched.get('matched_name')}**\n"
+            f"📺 {source} Match: **{fetched.get('matched_name')}**\n"
             f"📡 Status: {status_str}\n"
             f"🎬 Total Episodes: {fetched.get('total_eps', 0) or '—'}\n"
             f"🎙 Audio: {fetched.get('audio')} _(default)_\n"
@@ -1266,7 +1267,7 @@ async def _add_anime_step_name(client: Client, message: Message, session: dict, 
         session["season"] = None
         session["total_eps"] = 0
         summary = (
-            "⚠️ AniList pe is naam se koi match nahi mila.\n\n"
+            "⚠️ TMDB ya AniList pe is naam se koi match nahi mila.\n\n"
             "Anime add ho jaayega, audio default \"Hindi ORG\" set hoga, "
             "poster/genres baad mein `/update_post_list` se manually bhar sakte ho."
         )

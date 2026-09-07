@@ -3,17 +3,17 @@ anime_api.py
 ================
 /add_anime ke "auto-detail" step ke liye independent anime-metadata client.
 
-Koi bhi third-party backend/token nahi chahiye — dono APIs public & free hain:
+Primary source: TMDB (The Movie Database) — accurate poster, genres,
+episode count, status. Requires a free API key (TMDB_API_KEY in config.env).
+Anime zyaadatar TMDB par "TV" ke tarah listed hote hain, kuch (movies) "Movie"
+ke tarah — dono search kiye jaate hain.
 
-  - AniList   (https://anilist.co)  → title match, genres, description,
-                                       poster/banner, total episodes, status
-  - AniZip    (https://api.ani.zip) → AniList id se episode-level mapping
-                                       (season/episode count cross-check ke liye)
-
-Bina kisi config ke kaam karta hai — koi env var set karne ki zaroorat nahi.
+Fallback: AniList (free, no key) — jab TMDB key set na ho, ya TMDB par match
+na mile, tab AniList try hota hai taaki hit-rate zyaada rahe.
 """
 
 import logging
+import os
 import re
 from difflib import SequenceMatcher
 from typing import Optional
@@ -21,6 +21,10 @@ from typing import Optional
 import httpx
 
 LOGGER = logging.getLogger(__name__)
+
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
+TMDB_BASE = "https://api.themoviedb.org/3"
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/original"
 
 ANILIST_URL = "https://graphql.anilist.co"
 ANIZIP_URL = "https://api.ani.zip/mappings"
@@ -54,7 +58,7 @@ _client: Optional[httpx.AsyncClient] = None
 
 
 def is_configured() -> bool:
-    # AniList/AniZip public hain — hamesha "available" maana jaata hai.
+    # TMDB key ho ya na ho, AniList fallback ki wajah se hamesha "available".
     return True
 
 
@@ -83,6 +87,112 @@ def _fuzzy_ratio(a: str, b: str) -> float:
         return 0.0
     return SequenceMatcher(None, a, b).ratio()
 
+
+# ---------------------------------------------------------------------------
+# TMDB
+# ---------------------------------------------------------------------------
+
+_TMDB_STATUS_MAP = {
+    "Returning Series": "Ongoing",
+    "Planned": "Upcoming",
+    "In Production": "Upcoming",
+    "Pilot": "Upcoming",
+    "Ended": "Finished",
+    "Canceled": "Cancelled",
+    "Released": "Finished",
+    "Rumored": "Upcoming",
+    "Post Production": "Upcoming",
+}
+
+
+async def _tmdb_get(path: str, params: dict) -> Optional[dict]:
+    try:
+        client = await _get_client()
+        params = {**params, "api_key": TMDB_API_KEY}
+        resp = await client.get(f"{TMDB_BASE}{path}", params=params)
+        if resp.status_code != 200:
+            LOGGER.warning(f"[AnimeAPI] TMDB {path} -> HTTP {resp.status_code}")
+            return None
+        return resp.json()
+    except Exception as e:
+        LOGGER.warning(f"[AnimeAPI] TMDB {path} failed: {e}")
+        return None
+
+
+def _tmdb_title_match_score(query: str, result: dict) -> float:
+    candidates = [
+        result.get("name"), result.get("original_name"),
+        result.get("title"), result.get("original_title"),
+    ]
+    q = _normalize_title(query)
+    if not q:
+        return 0.0
+    best = 0.0
+    for cand in candidates:
+        cn = _normalize_title(cand)
+        if cn:
+            best = max(best, _fuzzy_ratio(q, cn))
+    return best
+
+
+async def _tmdb_search(query: str):
+    """Pehle TV, phir Movie search karo (anime dono tarah listed ho sakte hain)."""
+    tv = await _tmdb_get("/search/tv", {"query": query})
+    for result in (tv or {}).get("results") or []:
+        if _tmdb_title_match_score(query, result) >= _TITLE_MATCH_THRESHOLD:
+            return "tv", result
+
+    movie = await _tmdb_get("/search/movie", {"query": query})
+    for result in (movie or {}).get("results") or []:
+        if _tmdb_title_match_score(query, result) >= _TITLE_MATCH_THRESHOLD:
+            return "movie", result
+
+    return None, None
+
+
+async def _tmdb_details(media_type: str, tmdb_id: int) -> Optional[dict]:
+    return await _tmdb_get(f"/{media_type}/{tmdb_id}", {})
+
+
+async def _fetch_from_tmdb(anime_name: str) -> Optional[dict]:
+    if not TMDB_API_KEY:
+        LOGGER.info("[AnimeAPI] TMDB_API_KEY not set, skipping TMDB")
+        return None
+
+    media_type, result = await _tmdb_search(anime_name)
+    if not result:
+        LOGGER.info(f"[AnimeAPI] No TMDB match for '{anime_name}'")
+        return None
+
+    details = await _tmdb_details(media_type, result.get("id")) or result
+
+    if media_type == "tv":
+        matched_name = details.get("name") or anime_name
+        total_eps = details.get("number_of_episodes") or 0
+        status = _TMDB_STATUS_MAP.get(details.get("status") or "", "")
+    else:
+        matched_name = details.get("title") or anime_name
+        total_eps = 1
+        status = _TMDB_STATUS_MAP.get(details.get("status") or "", "")
+
+    poster_path = details.get("poster_path")
+    genres = ", ".join(g.get("name", "") for g in (details.get("genres") or []) if g.get("name"))
+
+    return {
+        "matched_name": matched_name,
+        "image": f"{TMDB_IMAGE_BASE}{poster_path}" if poster_path else "",
+        "genres": genres,
+        "audio": "Hindi ORG",
+        "season": None,
+        "total_eps": total_eps,
+        "status": status,
+        "source": "TMDB",
+    }
+
+
+# ---------------------------------------------------------------------------
+# AniList (fallback)
+# ---------------------------------------------------------------------------
 
 def _title_match_score(query: str, media: dict) -> float:
     titles = media.get("title") or {}
@@ -122,33 +232,16 @@ async def _anizip_mappings(anilist_id: int) -> Optional[dict]:
         return None
 
 
-async def search_anime(query: str) -> list:
-    """AniList pe title search karo, matched media (dict, agar mila) wapas do."""
-    media = await _anilist_search(query)
-    if not media:
-        return []
-    return [media]
+_ANILIST_STATUS_MAP = {
+    "RELEASING": "Ongoing",
+    "FINISHED": "Finished",
+    "NOT_YET_RELEASED": "Upcoming",
+    "CANCELLED": "Cancelled",
+    "HIATUS": "On Hiatus",
+}
 
 
-async def fetch_anime_details(anime_name: str):
-    """
-    AniList (+ AniZip) se anime ki details nikalo, /add_anime ke liye
-    zaroori fields ek dict mein:
-
-      {
-        "matched_name": str,
-        "image":        str,   # poster/banner URL ("" agar nahi mila)
-        "genres":       str,   # "Action, Comedy"
-        "audio":        str,   # AniList audio-language nahi deta — default
-                                # "Hindi ORG" (baad mein /update_post_list se
-                                # manually change kar sakte ho)
-        "season":       None,  # AniList per-season track nahi karta
-        "total_eps":    int,   # total episode count
-        "status":       str,   # "Ongoing" / "Finished" / ""
-      }
-
-    Match na mile ya API fail ho jaaye toh None.
-    """
+async def _fetch_from_anilist(anime_name: str) -> Optional[dict]:
     media = await _anilist_search(anime_name)
     if not media:
         LOGGER.info(f"[AnimeAPI] No AniList match for '{anime_name}'")
@@ -158,7 +251,7 @@ async def fetch_anime_details(anime_name: str):
     if score < _TITLE_MATCH_THRESHOLD:
         titles = media.get("title") or {}
         LOGGER.info(
-            f"[AnimeAPI] Rejecting low-confidence match for '{anime_name}': "
+            f"[AnimeAPI] Rejecting low-confidence AniList match for '{anime_name}': "
             f"got '{titles.get('english') or titles.get('romaji')}' (score={score:.2f})"
         )
         return None
@@ -173,14 +266,6 @@ async def fetch_anime_details(anime_name: str):
         # actual episode-mapping count se fallback lo.
         total_eps = len((doc.get("episodes") or {}))
 
-    status_map = {
-        "RELEASING": "Ongoing",
-        "FINISHED": "Finished",
-        "NOT_YET_RELEASED": "Upcoming",
-        "CANCELLED": "Cancelled",
-        "HIATUS": "On Hiatus",
-    }
-
     return {
         "matched_name": titles.get("english") or titles.get("romaji") or anime_name,
         "image": cover.get("extraLarge") or cover.get("large") or media.get("bannerImage") or "",
@@ -188,5 +273,48 @@ async def fetch_anime_details(anime_name: str):
         "audio": "Hindi ORG",
         "season": None,
         "total_eps": total_eps,
-        "status": status_map.get(media.get("status") or "", ""),
+        "status": _ANILIST_STATUS_MAP.get(media.get("status") or "", ""),
+        "source": "AniList",
     }
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+async def search_anime(query: str) -> list:
+    """TMDB (ya AniList) pe title search karo, matched media (dict, agar mila) wapas do."""
+    result = await _fetch_from_tmdb(query)
+    if result:
+        return [result]
+    media = await _anilist_search(query)
+    if not media:
+        return []
+    return [media]
+
+
+async def fetch_anime_details(anime_name: str):
+    """
+    TMDB se (fallback: AniList/AniZip) anime ki details nikalo, /add_anime ke
+    liye zaroori fields ek dict mein:
+
+      {
+        "matched_name": str,
+        "image":        str,   # poster URL ("" agar nahi mila)
+        "genres":       str,   # "Action, Comedy"
+        "audio":        str,   # default "Hindi ORG" (baad mein
+                                # /update_post_list se manually change karo)
+        "season":       None,
+        "total_eps":    int,   # total episode count
+        "status":       str,   # "Ongoing" / "Finished" / ""
+        "source":       str,   # "TMDB" / "AniList" — konsi API se aaya
+      }
+
+    Kahin se bhi match na mile toh None.
+    """
+    result = await _fetch_from_tmdb(anime_name)
+    if result:
+        return result
+
+    LOGGER.info(f"[AnimeAPI] Falling back to AniList for '{anime_name}'")
+    return await _fetch_from_anilist(anime_name)

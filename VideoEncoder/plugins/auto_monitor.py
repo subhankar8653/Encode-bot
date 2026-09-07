@@ -44,7 +44,7 @@ from pyrogram.enums import ParseMode
 
 from .. import LOGGER, app, owner, sudo_users, download_dir
 from ..utils.database.access_db import db
-from ..utils.a501_client import fetch_anime_details, is_configured as _a501_configured
+from ..utils.anime_api import fetch_anime_details
 
 # ─────────────────────────────────────────────
 #  Lazy imports (avoid circular on startup)
@@ -1234,58 +1234,47 @@ async def _add_anime_step_name(client: Client, message: Message, session: dict, 
 
     session["anime_name"] = anime_name
 
-    if not _a501_configured():
-        session["audio"] = ""
+    status_msg = await message.reply("🔎 AniList se anime ki details dhoondh raha hoon...")
+    try:
+        fetched = await fetch_anime_details(anime_name)
+    except Exception as e:
+        LOGGER.warning(f"[AddAnime] fetch_anime_details error: {e}")
+        fetched = None
+
+    if fetched:
+        session["audio"] = fetched.get("audio", "Hindi ORG")
+        session["genres"] = fetched.get("genres", "")
+        session["image"] = fetched.get("image", "")
+        session["season"] = fetched.get("season")
+        session["total_eps"] = fetched.get("total_eps", 0)
+
+        status_str = fetched.get("status") or "—"
+        summary = (
+            f"✅ **Details mil gaye!**\n\n"
+            f"📺 AniList Match: **{fetched.get('matched_name')}**\n"
+            f"📡 Status: {status_str}\n"
+            f"🎬 Total Episodes: {fetched.get('total_eps', 0) or '—'}\n"
+            f"🎙 Audio: {fetched.get('audio')} _(default)_\n"
+            f"🎭 Genres: {fetched.get('genres') or '—'}\n"
+            f"🖼 Poster: {'✅' if fetched.get('image') else '❌ nahi mila'}\n\n"
+            f"_Audio default \"Hindi ORG\" set hai — badalna ho toh `/update_post_list` se karo._"
+        )
+    else:
+        session["audio"] = "Hindi ORG"
         session["genres"] = ""
         session["image"] = ""
         session["season"] = None
         session["total_eps"] = 0
-        await message.reply(
-            "⚠️ A501 API configure nahi hai (`A501_BACKEND_URL` / `A501_TOKEN` "
-            "config.env mein set nahi) — auto-detail skip kar raha hoon.\n\n"
-            "Anime add ho jaayega, poster/audio/genres baad mein "
-            "`/update_post_list` se manually bhar sakte ho."
+        summary = (
+            "⚠️ AniList pe is naam se koi match nahi mila.\n\n"
+            "Anime add ho jaayega, audio default \"Hindi ORG\" set hoga, "
+            "poster/genres baad mein `/update_post_list` se manually bhar sakte ho."
         )
-    else:
-        status_msg = await message.reply("🔎 API se anime ki details dhoondh raha hoon...")
-        try:
-            fetched = await fetch_anime_details(anime_name)
-        except Exception as e:
-            LOGGER.warning(f"[AddAnime] fetch_anime_details error: {e}")
-            fetched = None
 
-        if fetched:
-            session["audio"] = fetched.get("audio", "")
-            session["genres"] = fetched.get("genres", "")
-            session["image"] = fetched.get("image", "")
-            session["season"] = fetched.get("season")
-            session["total_eps"] = fetched.get("total_eps", 0)
-
-            season_str = f"Season {fetched.get('season')}" if fetched.get("season") else "—"
-            summary = (
-                f"✅ **Details mil gaye!**\n\n"
-                f"📺 API Match: **{fetched.get('matched_name')}**\n"
-                f"🎬 {season_str} — {fetched.get('total_eps', 0)} episodes\n"
-                f"🎙 Audio: {fetched.get('audio') or '—'}\n"
-                f"🎭 Genres: {fetched.get('genres') or '—'}\n"
-                f"🖼 Poster: {'✅' if fetched.get('image') else '❌ nahi mila'}"
-            )
-        else:
-            session["audio"] = ""
-            session["genres"] = ""
-            session["image"] = ""
-            session["season"] = None
-            session["total_eps"] = 0
-            summary = (
-                "⚠️ API pe is naam se koi match nahi mila.\n\n"
-                "Anime add ho jaayega, poster/audio/genres baad mein "
-                "`/update_post_list` se manually bhar sakte ho."
-            )
-
-        try:
-            await status_msg.edit(summary)
-        except Exception:
-            await message.reply(summary)
+    try:
+        await status_msg.edit(summary)
+    except Exception:
+        await message.reply(summary)
 
     session["step"] = "interval"
     _add_anime_sessions[user_id] = session
@@ -1391,18 +1380,18 @@ async def _finalize_add_anime(client: Client, message: Message, session: dict):
         })
     await _save_schedule_list(slist)
 
-    season_str = f"Season {season}" if season else "—"
     image_line = (
         "🖼 **Poster:** ✅ auto-fetched\n" if image
         else "🖼 **Poster:** ⚠️ nahi mila — `/update_post_list` se add karo\n"
     )
+    eps_str = f"{total_eps} episodes" if total_eps else "— (baad mein pata chalega)"
     await message.reply(
         f"✅ **Anime Fully Added!**\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📺 **Anime:** {anime_name}\n"
         f"📢 **Channel:** {channel_title}\n"
-        f"🎬 **{season_str}** — {total_eps} episodes\n"
-        f"🎙 **Audio:** {audio or '—'}\n"
+        f"🎬 **Total Episodes:** {eps_str}\n"
+        f"🎙 **Audio:** {audio or 'Hindi ORG'}\n"
         f"🎭 **Genres:** {genres or '—'}\n"
         f"{image_line}"
         f"📅 **Next Episode In:** {interval_days} din\n"

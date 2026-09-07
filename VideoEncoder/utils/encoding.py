@@ -819,6 +819,59 @@ async def _encode_single(filepath, message, msg, audio_map=None):
     return output_filepath
 
 
+# Default channel-username band jo har auto-generated thumbnail ke bottom
+# pe lagta hai. Abhi ke liye hardcoded — future mein isko DB se editable
+# banayenge (per-user/per-channel).
+DEFAULT_THUMB_BAND_TEXT = "@SBANIME"
+
+
+def _add_thumb_username_band(image_path, text=DEFAULT_THUMB_BAND_TEXT):
+    """
+    Thumbnail ke ekdam niche ki taraf ek red-color lamba box add karta hai
+    jiske andar channel ka username (white bold text) hota hai — jaisa
+    reference screenshot mein dikhaya gaya tha.
+
+    Sirf ffmpeg se auto-nikale hue frame (get_thumbnail) pe lagta hai —
+    agar user/anime ka apna custom thumbnail already set hai, woh is
+    function ke through nahi guzarta, isliye untouched rehta hai.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.open(image_path).convert("RGB")
+        w, h = img.size
+        band_h = max(int(h * 0.09), 34)
+
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, h - band_h, w, h], fill=(220, 20, 20))
+
+        font_size = int(band_h * 0.55)
+        font = None
+        for fp in (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        ):
+            if os.path.isfile(fp):
+                font = ImageFont.truetype(fp, font_size)
+                break
+        if font is None:
+            try:
+                font = ImageFont.load_default(size=font_size)
+            except TypeError:
+                # Purane Pillow versions mein load_default() size accept nahi karta
+                font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        tx = (w - tw) / 2 - bbox[0]
+        ty = h - band_h + (band_h - th) / 2 - bbox[1]
+        draw.text((tx, ty), text, font=font, fill=(255, 255, 255))
+
+        img.save(image_path, "JPEG", quality=90)
+    except Exception as e:
+        LOGGER.warning(f"Thumbnail username band failed: {e}")
+
+
 def get_thumbnail(in_filename, path, ttl):
     out_filename = os.path.join(path, str(time.time()) + ".jpg")
     try:
@@ -826,7 +879,10 @@ def get_thumbnail(in_filename, path, ttl):
             'ffmpeg', '-hide_banner', '-loglevel', 'error',
             '-ss', str(ttl), '-i', in_filename, '-vframes', '1', '-y', out_filename
         ], check=True, capture_output=True)
-        return out_filename if os.path.isfile(out_filename) else None
+        if not os.path.isfile(out_filename):
+            return None
+        _add_thumb_username_band(out_filename)
+        return out_filename
     except Exception as e:
         LOGGER.warning(f"Thumbnail failed: {e}")
         return None

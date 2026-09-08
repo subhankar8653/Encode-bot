@@ -277,7 +277,7 @@ async def _auto_rename(filepath: str, dl_dir: str, user_id: int = None) -> str:
     quality = _quality_from(os.path.basename(filepath))
     resolution = quality.replace("p", "") if quality != "unknown" else "OG"
 
-    channel = await get_community_tag(user_id) if user_id else "@SBANIME"
+    channel = await get_community_tag()
     caption = build_auto_caption(filepath, resolution=resolution if resolution != "OG" else None,
                                   channel=channel)
     # proper_filename: spaces rakho, sirf illegal chars hatao

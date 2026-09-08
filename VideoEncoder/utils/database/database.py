@@ -335,14 +335,20 @@ class Database:
         return user.get('thumbnail', None)
 
     # Community Branding — /community command se set hota hai.
-    # Jab set ho jaaye, "sbanime" ki jagah har jagah (thumbnail band,
-    # auto-caption tag, full-metadata title) yeh naam use hota hai.
-    async def set_community(self, id, name):
-        await self.col.update_one({'id': id}, {'$set': {'community': name}}, upsert=True)
+    # GLOBAL (bot-wide) setting hai — kisi bhi authorized (owner/sudo)
+    # account se set karo, HAR upload path (manual + auto-monitor) mein
+    # "sbanime" ki jagah yeh naam use hota hai. Per-user NAHI hai, kyunki
+    # auto-monitor ka upload internally owner ID use karta hai — agar
+    # yeh per-user hota toh sudo account se set kiya naam auto-monitor
+    # tak kabhi nahi pahunchta.
+    async def set_community(self, name):
+        await self.col2.update_one({'id': 'community'}, {'$set': {'name': name}}, upsert=True)
 
-    async def get_community(self, id):
-        user = await self._get_user(id)
-        return user.get('community') or None
+    async def get_community(self):
+        doc = await self.col2.find_one({'id': 'community'})
+        if not doc:
+            return None
+        return doc.get('name') or None
 
     # Swap Rules
     async def set_swap(self, id, rules: dict):
@@ -510,10 +516,10 @@ class Database:
         result = dict(self._FULL_META_DEFAULT)
         result.update(saved)
 
-        # Agar user ne apna /community naam set kiya hai aur video_title
-        # ab tak untouched default hi hai ("Sbanime hindi"), toh usko
-        # community ke naam se replace kar do.
-        community = (user.get('community') or '').strip()
+        # Agar bot-wide /community naam set hai aur video_title ab tak
+        # untouched default hi hai ("Sbanime hindi"), toh usko community
+        # ke naam se replace kar do.
+        community = (await self.get_community() or '').strip()
         if community and result.get('video_title', '').strip().lower() == 'sbanime hindi':
             result['video_title'] = f"{community.capitalize()} hindi"
 

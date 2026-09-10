@@ -45,6 +45,7 @@ from pyrogram.enums import ParseMode
 from .. import LOGGER, app, owner, sudo_users, download_dir, log
 from ..utils.database.access_db import db
 from ..utils.anime_api import fetch_anime_details
+from ..utils.helper import check_chat
 
 # ─────────────────────────────────────────────
 #  Lazy imports (avoid circular on startup)
@@ -52,6 +53,10 @@ from ..utils.anime_api import fetch_anime_details
 def _get_rti_fns():
     from .rti_downloader import get_watchmult_link, get_argon_link, argon_to_swift
     return get_watchmult_link, get_argon_link, argon_to_swift
+
+def _get_rti_latest_fn():
+    from .rti_downloader import get_latest_episode
+    return get_latest_episode
 
 def _get_schedule_fn():
     from .schedule_notify import send_schedule_notification
@@ -1064,6 +1069,184 @@ async def auto_monitor_handler(client: Client, message: Message):
             LOGGER.error(f"[AutoMonitor] Schedule notification error: {e}")
     else:
         LOGGER.warning(f"[AutoMonitor] No episodes uploaded — schedule notification skipped.")
+
+
+# ─────────────────────────────────────────────
+#  /Rtic — manual RTI URL se auto-upload
+#  ─────────────────────────────────────────────
+#  /rti (rti_downloader.py) ki tarah hi URL leta hai, lekin bot ki apni DM
+#  mein bhejne ke bajaye — /add_anime list se match hone wale channel pe
+#  seedha upload kar deta hai, aur pehle episode ke 360p ke saath update
+#  channel pe bhi post daal deta hai. Yeh essentially auto_monitor_handler()
+#  ka wahi engine (_get_swift_url_for_episode + _episode_quality_poller) hai,
+#  bas monitor-channel-post ki jagah user manually URL deta hai.
+#
+#  Usage (waisa hi jaisa /rti):
+#    /Rtic <url>                -> Latest episode auto-detect
+#    /Rtic <url> <start> <end>  -> Episode range
+#    /Rtic <url> 5 5            -> Sirf episode 5
+#    /Rtic <url> 0 0            -> Movie mode
+#
+#  Koi bhi status message mein swift_url ya RTI page url nahi dikhta —
+#  sirf anime/channel match, episode number, aur quality/upload status.
+# ─────────────────────────────────────────────
+@Client.on_message(filters.command(["Rtic", "rtic"]))
+async def cmd_rtic(client: Client, message: Message):
+    c = await check_chat(message, chat="Sudo")
+    if not c:
+        return
+
+    get_latest_episode = _get_rti_latest_fn()
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.reply(
+            "**Usage:**\n"
+            "`/Rtic <url>` — Latest episode, matching channel pe auto-upload\n"
+            "`/Rtic <url> <start> <end>` — Episode range\n"
+            "`/Rtic <url> 5 5` — Sirf episode 5\n"
+            "`/Rtic <url> 0 0` — Movie mode\n\n"
+            "⚠️ Anime pehle `/add_anime` se add hona chahiye (channel match "
+            "usi list se hota hai)."
+        )
+        return
+
+    page_url = parts[1].strip()
+    if not page_url.startswith("http"):
+        await message.reply("❌ Valid URL dalo.")
+        return
+
+    anime_list = await _get_anime_list()
+    if not anime_list:
+        await message.reply("❌ Koi anime `/add_anime` se add nahi hai — pehle add karo.")
+        return
+
+    # ── Episode range decide karo (waisa hi jaisa /rti) ──
+    if len(parts) == 2:
+        prep = await message.reply("🔍 Latest episode detect ho raha hai...")
+        loop = asyncio.get_event_loop()
+        latest_ep, page_title = await loop.run_in_executor(None, get_latest_episode, page_url)
+        if not latest_ep:
+            await prep.edit("❌ Page se koi episode nahi mila. URL check karo.")
+            return
+        start_ep = end_ep = latest_ep
+    else:
+        if len(parts) < 4:
+            await message.reply("❌ Range ke liye do numbers chahiye.\nExample: `/Rtic <url> 1 10`")
+            return
+        try:
+            start_ep = int(parts[2])
+            end_ep = int(parts[3])
+        except ValueError:
+            await message.reply("❌ Episode number valid nahi.\nExample: `/Rtic <url> 1 10`")
+            return
+        if start_ep > end_ep:
+            await message.reply("❌ Start > End nahi ho sakta.")
+            return
+        if end_ep - start_ep > 50:
+            await message.reply("❌ Max 50 episodes ek baar mein.")
+            return
+        prep = await message.reply(f"🔍 `{page_url.split('//')[-1].split('/')[0]}` se anime naam nikal raha hoon...")
+        loop = asyncio.get_event_loop()
+        _, page_title = await loop.run_in_executor(None, get_latest_episode, page_url)
+
+    page_title = page_title or ""
+
+    # ── Anime list se match dhundo — page title + URL dono se try karo ──
+    matched = _find_matching_anime(page_title + " " + page_url, anime_list)
+    if not matched:
+        await prep.edit(
+            f"❌ **Koi matching anime nahi mila!**\n\n"
+            f"📺 Page se mila naam: `{page_title or 'pata nahi chala'}`\n\n"
+            f"Pehle `/add_anime` se is anime ko (page ke naam se milta-julta) "
+            f"add karo, phir dobara try karo."
+        )
+        return
+
+    anime_name = matched['anime_name']
+    channel_id = matched['channel_id']
+    oid = await _owner_id()
+
+    total = end_ep - start_ep + 1
+    ep_label_range = "Movie" if (start_ep == 0 and end_ep == 0) else f"Ep {start_ep}-{end_ep}"
+    await prep.edit(
+        f"✅ **Matched:** `{anime_name}`\n"
+        f"🎯 {ep_label_range} — `{total}` episode(s)\n"
+        f"⏳ Shuru ho raha hai..."
+    )
+
+    update_post_sent = [False]
+    any_ep_uploaded = False
+
+    for i, ep_num in enumerate(range(start_ep, end_ep + 1), 1):
+        is_last = (i == total)
+        ep_lbl = "Movie" if ep_num == 0 else f"Ep {ep_num}"
+
+        find_msg = await message.reply(
+            f"🎌 **Rtic** | `{anime_name}` | {ep_lbl}\n\n"
+            f"🔍 Swift URL nikaal raha hoon..."
+        )
+
+        SWIFT_FAST_ATTEMPTS = 10
+        SWIFT_SLOW_ATTEMPTS = 20
+        SWIFT_MAX_ATTEMPTS = SWIFT_FAST_ATTEMPTS + SWIFT_SLOW_ATTEMPTS
+
+        swift_url = None
+        for swift_attempt in range(1, SWIFT_MAX_ATTEMPTS + 1):
+            swift_url = await _get_swift_url_for_episode(page_url, ep_num, find_msg)
+            if swift_url:
+                break
+
+            if swift_attempt == SWIFT_MAX_ATTEMPTS:
+                await find_msg.edit(
+                    f"❌ **Rtic** | `{anime_name}` | {ep_lbl}\n\n"
+                    f"⏱️ {SWIFT_MAX_ATTEMPTS} attempts (~25 min) ke baad bhi\n"
+                    f"link nahi mila. RTI pe manually check karo."
+                )
+                break
+
+            is_fast = swift_attempt <= SWIFT_FAST_ATTEMPTS
+            interval = 30 if is_fast else 60
+            phase_lbl = "⚡ Fast" if is_fast else "🐢 Slow"
+            remaining_attempts = SWIFT_MAX_ATTEMPTS - swift_attempt
+            try:
+                await find_msg.edit(
+                    f"⏳ **Rtic** | `{anime_name}` | {ep_lbl}\n\n"
+                    f"🔄 Attempt `{swift_attempt}/{SWIFT_MAX_ATTEMPTS}` {phase_lbl} — link nahi mila\n"
+                    f"⏰ `{interval}s` baad retry... ({remaining_attempts} attempts left)"
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+
+        if not swift_url:
+            continue
+
+        try:
+            await find_msg.delete()
+        except Exception:
+            pass
+
+        ep_uploaded = await _episode_quality_poller(
+            client, message, swift_url,
+            ep_num, anime_name, channel_id, oid,
+            matched_entry=matched,
+            start_ep=start_ep,
+            end_ep=end_ep,
+            update_post_sent=update_post_sent,
+        )
+        if ep_uploaded:
+            any_ep_uploaded = True
+
+        if not is_last:
+            await asyncio.sleep(3)
+
+    if any_ep_uploaded:
+        try:
+            send_schedule_notification = _get_schedule_fn()
+            await send_schedule_notification(client, channel_id, anime_name, end_ep)
+        except Exception as e:
+            LOGGER.error(f"[Rtic] Schedule notification error: {e}")
 
 
 # ─────────────────────────────────────────────

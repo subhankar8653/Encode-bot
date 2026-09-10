@@ -379,8 +379,11 @@ def argon_to_swift(argon_url: str):
 # ─────────────────────────────────────────────
 async def _run_rti_swift(client, message: Message, swift_url: str, status_msg, ep_num: int, total_eps: int):
     from .swift_downloader import _run_swift
+    ep_label = "Movie" if ep_num == 0 else f"Ep {ep_num}/{total_eps}"
     # /swift wala exact flow use karo — download + queued messages + sequential upload
-    await _run_swift(client, message, swift_url, encode=False)
+    # show_url=False: DM mein swift_url kabhi nahi dikhega, sirf status (downloading/
+    # uploading/quality/episode) — episode_label se pata chalega kaunsa episode chal raha hai
+    await _run_swift(client, message, swift_url, encode=False, episode_label=ep_label, show_url=False)
     return True
 
 async def _process_episode(client, message, page_url, episode_num, total_episodes, status_msg):
@@ -463,9 +466,8 @@ async def _process_episode(client, message, page_url, episode_num, total_episode
 
     # ── Swift URL mil gaya — download + upload ──
     try:
-        await message.reply(
-            f"🔗 **{ep_label} — Swift Link**\n\n"
-            f"`{swift_url}`\n\n"
+        await status_msg.edit(
+            f"✅ **{ep_label}/{total_episodes} — Link mil gaya**\n\n"
             f"⬇️ Ab download shuru ho raha hai..."
         )
         await _run_rti_swift(client, message, swift_url, status_msg, ep_num=episode_num, total_eps=total_episodes)

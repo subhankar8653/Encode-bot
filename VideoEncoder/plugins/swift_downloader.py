@@ -751,19 +751,21 @@ def _scrape_and_download(swift_url: str, dl_dir: str, status_cb=None, quality_fi
 # ─────────────────────────────────────────────
 async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, encode: bool,
                            on_half: asyncio.Event = None, skip_forward: bool = False,
-                           uploader_client=None):
+                           uploader_client=None, label_prefix: str = ""):
     """
     Ek file upload karo.
     Returns: (success: bool, sent_message: Message | None, quality: str)
     sent_message = Telegram pe jo actual video message gaya (reorder ke liye chahiye)
     on_half: asyncio.Event — jab upload 50% ho tab fire karo (next file ko signal karne ke liye)
+    label_prefix: status messages ke upar dikhne wala prefix (e.g. "Ep 5" RTI flow ke liye) — optional
     """
     fname_orig = os.path.basename(filepath)
     quality = _quality_from(fname_orig)
     size_mb = os.path.getsize(filepath) / (1024 * 1024)
+    prefix = f"🎬 **{label_prefix}**\n" if label_prefix else ""
 
     await msg.edit(
-        f"🔄 **Renaming `{quality}`...**\n"
+        f"{prefix}🔄 **Renaming `{quality}`...**\n"
         f"📁 `{fname_orig}`\n"
         f"💾 `{size_mb:.1f} MB`"
     )
@@ -773,7 +775,7 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
     quality = _quality_from(fname)
 
     await msg.edit(
-        f"📤 **Uploading `{quality}`...**\n"
+        f"{prefix}📤 **Uploading `{quality}`...**\n"
         f"📁 `{fname}`\n"
         f"💾 `{size_mb:.1f} MB`"
     )
@@ -781,7 +783,7 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
     try:
         if encode:
             from ..utils.helper import handle_encode
-            await msg.edit(f"⚙️ **Encoding `{quality}`...**")
+            await msg.edit(f"{prefix}⚙️ **Encoding `{quality}`...**")
             await handle_encode(filepath, message, msg)
             return True, None, quality
 
@@ -835,22 +837,13 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
                 thumb = get_thumbnail(filepath, dl_dir, duration / 4 if duration else 0, band_text=band_text)
             custom_thumb_used = False
 
-        # Custom thumb (custompic/personal) pe bhi default username-band lagao —
-        # get_thumbnail() ke andar auto-generated frame pe already lag chuka hota hai,
-        # yahan sirf custom_thumb_used == True wale case ko cover karna hai.
-        # Local file pe band laga ke fresh Telegram file_id nikalte hain (log channel
-        # pe silently bhej ke) taaki 'cover' ke liye bhi banded copy use ho, na ki
-        # DB mein saved original (bina-band) file_id.
-        cover = None
-        if custom_thumb_id and custom_thumb_used and thumb:
-            try:
-                band_text = await get_community_tag(user_id)
-                _add_thumb_username_band(thumb, text=band_text)
-                _sent_thumb = await app.send_photo(log, photo=thumb)
-                cover = _sent_thumb.photo.file_id
-            except Exception as e:
-                LOGGER.warning(f"[Swift] Banded cover upload failed, falling back: {e}")
-                cover = custom_thumb_id
+        # Custom thumb (custompic keyword ya default /setpic) pe koi band NAHI
+        # lagta — user ne khud jo pic set ki hai wahi as-is (bina kisi red
+        # @Sbanime band ke) use hoti hai. Band sirf tab lagta hai jab koi
+        # /setpic set NAHI hai aur auto/API se pic li ja rahi hai — TMDB/AniList
+        # poster ya ffmpeg-frame, dono get_tmdb_thumbnail()/get_thumbnail() ke
+        # andar already band ke saath aate hain (upar dekho).
+        cover = custom_thumb_id if (custom_thumb_id and custom_thumb_used) else None
 
         # cover (file_id) = video player background cover pic
         # thumb (local path) = gallery preview thumbnail
@@ -994,17 +987,34 @@ async def _reorder_if_needed(client, message, uploaded_results: list):
 # ─────────────────────────────────────────────
 #  Core command logic
 # ─────────────────────────────────────────────
-async def _run_swift(client, message, swift_url: str, encode: bool, quality_filter: str = None):
+async def _run_swift(client, message, swift_url: str, encode: bool, quality_filter: str = None,
+                      episode_label: str = None, show_url: bool = True):
+    """
+    episode_label: status messages ke upar dikhne wala label (e.g. "Ep 5") — optional,
+                   RTI flow (/rti, /rtic) se pass hota hai taaki pata chale kaunsa
+                   episode download/upload ho raha hai.
+    show_url: False hone pe swift_url kahin bhi user-facing message mein nahi dikhega
+              (sirf status — downloading/uploading/quality/episode). /rti, /rtic isse
+              False rakhte hain; /swift, /swiftencode mein normal True rehta hai.
+    """
     session_id = str(int(time.time()))
     dl_dir = os.path.join(download_dir, f"swift_{session_id}")
     os.makedirs(dl_dir, exist_ok=True)
 
+    prefix = f"🎬 **{episode_label}**\n\n" if episode_label else ""
     filter_text = f" | Filter: `{quality_filter}`" if quality_filter else ""
-    msg = await message.reply(
-        f"🔗 **Swift Downloader v7**\n\n"
-        f"🌐 `{swift_url}`{filter_text}\n\n"
-        f"🔍 Page open ho raha hai... 360p button ka wait karega (max 20s scan)"
-    )
+
+    if show_url:
+        msg = await message.reply(
+            f"{prefix}🔗 **Swift Downloader v7**\n\n"
+            f"🌐 `{swift_url}`{filter_text}\n\n"
+            f"🔍 Page open ho raha hai... 360p button ka wait karega (max 20s scan)"
+        )
+    else:
+        msg = await message.reply(
+            f"{prefix}🔍 **Fetching...**{filter_text}\n\n"
+            f"Page open ho raha hai... 360p button ka wait karega (max 20s scan)"
+        )
 
     loop = asyncio.get_event_loop()
 
@@ -1020,7 +1030,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
             ) / (1024 * 1024)
             try:
                 await msg.edit(
-                    f"⬇️ **Downloading...**\n\n"
+                    f"{prefix}⬇️ **Downloading...**\n\n"
                     f"✅ Complete : `{len(done)}`\n"
                     f"📥 In Progress : `{len(in_prog)}`\n"
                     f"💾 Downloaded : `{total_mb:.1f} MB`\n"
@@ -1040,7 +1050,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
 
     if result["error"] and not result["files"]:
         await msg.edit(
-            f"❌ **Failed!**\n\n"
+            f"{prefix}❌ **Failed!**\n\n"
             f"Error: `{result['error']}`\n\n"
             f"Railway logs mein `[Swift]` lines check karo."
         )
@@ -1048,7 +1058,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
 
     files = result["files"]
     if not files:
-        await msg.edit("❌ **Koi file download nahi hui!**")
+        await msg.edit(f"{prefix}❌ **Koi file download nahi hui!**")
         return
 
     # Size ke hisab se sort — chhoti pehle
@@ -1059,7 +1069,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
         if not filtered:
             available = [_quality_from(os.path.basename(f)) for f in files]
             await msg.edit(
-                f"❌ **`{quality_filter}` nahi mili!**\n\n"
+                f"{prefix}❌ **`{quality_filter}` nahi mili!**\n\n"
                 f"📦 Available: `{' | '.join(available)}`\n\n"
                 f"Sahi quality likhke dobara try karo."
             )
@@ -1073,7 +1083,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
 
     qualities_list = ' → '.join(_quality_from(os.path.basename(f)) for f in files)
     await msg.edit(
-        f"✅ **{len(files)} file(s) mili!**\n\n"
+        f"{prefix}✅ **{len(files)} file(s) mili!**\n\n"
         f"📊 `{qualities_list}`\n\n"
         f"📤 Upload ho raha hai..."
     )
@@ -1087,7 +1097,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
     for fp in files:
         q = _quality_from(os.path.basename(fp))
         try:
-            dm = await message.reply(f"📤 **Uploading `{q}`...**")
+            dm = await message.reply(f"{prefix}📤 **Uploading `{q}`...**")
             _dummy_msgs[fp] = dm
         except Exception:
             _dummy_msgs[fp] = msg  # fallback
@@ -1118,6 +1128,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
             client, message, um, filepath, dl_dir, encode,
             on_half=_half_events[idx],
             uploader_client=None,
+            label_prefix=episode_label,
         )
         # sent_msg milne ke baad delete — user ko stuck na lage
         try:
@@ -1155,7 +1166,7 @@ async def _run_swift(client, message, swift_url: str, encode: bool, quality_filt
         key=lambda q: QUALITY_ORDER.get(q, 99)
     )
     await msg.edit(
-        f"🎉 **Complete!**\n\n"
+        f"{prefix}🎉 **Complete!**\n\n"
         f"✅ Uploaded : `{uploaded_count}/{len(files)}`\n"
         f"📊 `{' → '.join(expected_order) or 'N/A'}`"
     )

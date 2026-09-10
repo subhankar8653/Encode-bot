@@ -807,7 +807,9 @@ async def cmd_cancel_update_post(client: Client, message: Message):
 # ─────────────────────────────────────────────
 #  /update_post_button — default Kaise Dekhein / Join Backup links set karo
 #  Ye ek baar set karo, sab future update posts pe automatically lagega.
-#  Dobara is command se reset/change kiya ja sakta hai.
+#  Dobara is command se reset/change kiya ja sakta hai. Kisi bhi step pe
+#  `skip` bhejo to us button ko hata do (remove) — dobara set karne tak
+#  woh button future posts pe nahi dikhega.
 # ─────────────────────────────────────────────
 @Client.on_message(filters.command("update_post_button") & filters.private)
 async def cmd_update_post_button(client: Client, message: Message):
@@ -818,10 +820,43 @@ async def cmd_update_post_button(client: Client, message: Message):
     user_id = message.from_user.id
     _update_post_button_sessions[user_id] = {"step": "kaise_dekhein"}
 
+    current = await _get_button_defaults()
+    cur_line = ""
+    if current.get("kaise_dekhein") or current.get("join_backup"):
+        cur_line = (
+            f"\n**Abhi set hai:**\n"
+            f"• ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ •: `{current.get('kaise_dekhein') or '—'}`\n"
+            f"• ᴊᴏɪɴ ʙᴀᴄᴋᴜᴘ •: `{current.get('join_backup') or '—'}`\n"
+        )
+
     await message.reply(
-        "**Step 1/2 — • ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ • ka link do:**\n\n"
-        "**Example:** `https://t.me/+xxxxxxxxxx`\n\n"
+        f"**Step 1/2 — • ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ • ka link do:**\n"
+        f"{cur_line}\n"
+        "**Example:** `https://t.me/+xxxxxxxxxx`\n"
+        "**Remove karna ho toh:** `skip` bhejo\n\n"
         "_Cancel karna ho toh `/cancel_update_post` bhejo._"
+    )
+
+
+# ─────────────────────────────────────────────
+#  /remove_update_post_button — dono default buttons ek saath hata do
+#  (interactive flow se guzre bina — quick full removal)
+# ─────────────────────────────────────────────
+@Client.on_message(filters.command("remove_update_post_button") & filters.private)
+async def cmd_remove_update_post_button(client: Client, message: Message):
+    if not _is_auth(message.from_user.id):
+        return
+
+    current = await _get_button_defaults()
+    if not current.get("kaise_dekhein") and not current.get("join_backup"):
+        await message.reply("📭 Koi default button already set nahi hai.")
+        return
+
+    await _save_button_defaults({"kaise_dekhein": None, "join_backup": None})
+    await message.reply(
+        "🗑️ **Dono default buttons remove kar diye!**\n\n"
+        "Ab se update posts pe • ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ • / • ᴊᴏɪɴ ʙᴀᴄᴋᴜᴘ • buttons nahi lagenge.\n"
+        "Dobara set karna ho toh `/update_post_button` karo."
     )
 
 
@@ -1241,8 +1276,19 @@ async def update_post_text_input(client: Client, message: Message):
             raise ContinuePropagation
 
         if btn_session.get("step") == "kaise_dekhein":
+            if text.lower() == "skip":
+                _update_post_button_sessions[user_id] = {
+                    "step": "join_backup", "kaise_dekhein": None
+                }
+                await message.reply(
+                    "🗑️ • ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ • hata diya.\n\n"
+                    "**Step 2/2 — • ᴊᴏɪɴ ʙᴀᴄᴋᴜᴘ • ka link do:**\n\n"
+                    "**Example:** `https://t.me/+xxxxxxxxxx`\n"
+                    "**Remove karna ho toh:** `skip` bhejo"
+                )
+                raise StopPropagation
             if not text.startswith("http"):
-                await message.reply("⚠️ Valid link do (`https://...`).")
+                await message.reply("⚠️ Valid link do (`https://...`) ya `skip` bhejo remove karne ke liye.")
                 raise StopPropagation
             _update_post_button_sessions[user_id] = {
                 "step": "join_backup", "kaise_dekhein": text
@@ -1250,13 +1296,28 @@ async def update_post_text_input(client: Client, message: Message):
             await message.reply(
                 f"✅ • ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ •: `{text}`\n\n"
                 f"**Step 2/2 — • ᴊᴏɪɴ ʙᴀᴄᴋᴜᴘ • ka link do:**\n\n"
-                f"**Example:** `https://t.me/+xxxxxxxxxx`"
+                f"**Example:** `https://t.me/+xxxxxxxxxx`\n"
+                f"**Remove karna ho toh:** `skip` bhejo"
             )
             raise StopPropagation
 
         if btn_session.get("step") == "join_backup":
+            if text.lower() == "skip":
+                kaise_url = btn_session.get("kaise_dekhein")
+                _update_post_button_sessions.pop(user_id, None)
+                await _save_button_defaults({
+                    "kaise_dekhein": kaise_url,
+                    "join_backup": None,
+                })
+                await message.reply(
+                    "✅ **Saved!**\n\n"
+                    f"• ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ •: `{kaise_url or '— (removed)'}`\n"
+                    f"• ᴊᴏɪɴ ʙᴀᴄᴋᴜᴘ •: `— (removed)`\n\n"
+                    "Change karna ho toh dobara `/update_post_button` karo."
+                )
+                raise StopPropagation
             if not text.startswith("http"):
-                await message.reply("⚠️ Valid link do (`https://...`).")
+                await message.reply("⚠️ Valid link do (`https://...`) ya `skip` bhejo remove karne ke liye.")
                 raise StopPropagation
             kaise_url = btn_session["kaise_dekhein"]
             _update_post_button_sessions.pop(user_id, None)
@@ -1267,7 +1328,7 @@ async def update_post_text_input(client: Client, message: Message):
             })
             await message.reply(
                 "✅ **Saved!**\n\n"
-                f"• ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ •: `{kaise_url}`\n"
+                f"• ᴋᴀɪꜱᴇ ᴅᴇᴋʜᴇɪɴ •: `{kaise_url or '— (removed)'}`\n"
                 f"• ᴊᴏɪɴ ʙᴀᴄᴋᴜᴘ •: `{text}`\n\n"
                 "Ab se yeh dono buttons sabhi update posts pe automatically lagenge.\n"
                 "Change karna ho toh dobara `/update_post_button` karo."

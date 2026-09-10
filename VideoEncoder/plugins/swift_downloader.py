@@ -839,11 +839,29 @@ async def _upload_one_file(client, message, msg, filepath: str, dl_dir: str, enc
 
         # Custom thumb (custompic keyword ya default /setpic) pe koi band NAHI
         # lagta — user ne khud jo pic set ki hai wahi as-is (bina kisi red
-        # @Sbanime band ke) use hoti hai. Band sirf tab lagta hai jab koi
-        # /setpic set NAHI hai aur auto/API se pic li ja rahi hai — TMDB/AniList
-        # poster ya ffmpeg-frame, dono get_tmdb_thumbnail()/get_thumbnail() ke
-        # andar already band ke saath aate hain (upar dekho).
-        cover = custom_thumb_id if (custom_thumb_id and custom_thumb_used) else None
+        # @Sbanime band ke) use hoti hai.
+        #
+        # Cover (high-quality video-player background) DONO cases mein lagna
+        # chahiye — chahe custom /setpic ho ya API se auto-fetched poster/frame
+        # ho. Telegram ka `thumb=` param hamesha ~320px tak compress ho jaata
+        # hai (platform limit) — isliye sirf thumb pe bharosa karne se
+        # thumbnail/player-background dhundhla (low quality) dikhta hai.
+        # `cover` alag se full-resolution photo ke roop mein bhejte hain taaki
+        # dono jagah — gallery thumbnail aur player cover — sharp dikhe.
+        cover = None
+        if custom_thumb_id and custom_thumb_used:
+            # User ne jo pic set ki thi wahi as-is (unbanded, full quality) cover hai
+            cover = custom_thumb_id
+        elif thumb and os.path.isfile(thumb):
+            # Auto-fetched (TMDB/AniList poster ya ffmpeg-frame, already banded)
+            # local file ko full-res photo ke roop mein log channel pe silently
+            # bhejke uska file_id cover ke liye use karo.
+            try:
+                _sent_cover = await app.send_photo(log, photo=thumb)
+                cover = _sent_cover.photo.file_id
+            except Exception as e:
+                LOGGER.warning(f"[Swift] Auto-thumb cover upload failed: {e}")
+                cover = None
 
         # cover (file_id) = video player background cover pic
         # thumb (local path) = gallery preview thumbnail

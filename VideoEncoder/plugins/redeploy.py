@@ -8,16 +8,17 @@ Railway ka Public API (GraphQL) use karta hai — koi extra library nahi
 chahiye, httpx (already requirements.txt mein hai) se seedha call karte
 hain.
 
-Setup (config.env mein 3 naye optional variables):
-  RAILWAY_API_TOKEN     -> railway.app/account/tokens se personal/account
-                            token banao (Account Token, "All your
-                            resources" scope kaafi hai)
-  RAILWAY_SERVICE_ID    -> Railway dashboard mein service khol ke URL se:
-                            railway.app/project/<projectId>/service/<serviceId>
-  RAILWAY_ENVIRONMENT_ID -> wahi URL mein ?environmentId=<environmentId>
-                            (ya Settings > General mein environment ID)
+Setup (config.env mein sirf 1 naya variable):
+  RAILWAY_API_TOKEN -> railway.app/account/tokens se personal/account
+                        token banao (Account Token, "All your
+                        resources" scope kaafi hai)
 
-Teeno set na ho toh /redeploy bas setup instructions dikha dega — bot
+Service ID aur Environment ID Railway khud automatically inject karta
+hai (RAILWAY_SERVICE_ID / RAILWAY_ENVIRONMENT_ID) har deployment mein —
+unhe manually set karne ki zaroorat nahi hai jab tak bot Railway pe hi
+deployed hai.
+
+Token set na ho toh /redeploy bas setup instructions dikha dega — bot
 crash nahi karega (lazy getenv, startup pe kuch check nahi hota).
 """
 
@@ -53,8 +54,10 @@ def _railway_config():
 async def _trigger_railway_redeploy() -> tuple[bool, str]:
     """Returns (success, message)."""
     token, service_id, env_id = _railway_config()
-    if not (token and service_id and env_id):
-        return False, "config_missing"
+    if not token:
+        return False, "token_missing"
+    if not (service_id and env_id):
+        return False, "not_on_railway"
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -84,15 +87,20 @@ async def _trigger_railway_redeploy() -> tuple[bool, str]:
 
 _SETUP_INSTRUCTIONS = (
     "⚠️ **Redeploy set up nahi hai!**\n\n"
-    "`config.env` mein 3 variables add karo:\n\n"
-    "1️⃣ `RAILWAY_API_TOKEN` — [railway.app/account/tokens](https://railway.app/account/tokens) "
-    "se Account Token banao\n"
-    "2️⃣ `RAILWAY_SERVICE_ID` — Railway dashboard mein service khol ke URL se copy karo\n"
-    "   `railway.app/project/<projectId>/service/`**`<serviceId>`**\n"
-    "3️⃣ `RAILWAY_ENVIRONMENT_ID` — usi URL ke end mein\n"
-    "   `?environmentId=`**`<environmentId>`**\n\n"
-    "Set karne ke baad bot ko ek baar manually redeploy karo (Railway pe) — "
-    "uske baad se `/redeploy` command se hi kaam chal jayega."
+    "`config.env` mein bas 1 variable add karo:\n\n"
+    "`RAILWAY_API_TOKEN` — [railway.app/account/tokens](https://railway.app/account/tokens) "
+    "se Account Token banao (\"All your resources\" scope kaafi hai)\n\n"
+    "Service ID aur Environment ID ki zaroorat nahi — Railway woh khud "
+    "provide karta hai. Bas token add karke ek baar redeploy karo (Railway "
+    "pe manually) — uske baad `/redeploy` command se hi kaam chal jayega."
+)
+
+_NOT_ON_RAILWAY_MESSAGE = (
+    "⚠️ **RAILWAY_SERVICE_ID / RAILWAY_ENVIRONMENT_ID nahi mile!**\n\n"
+    "Yeh variables Railway khud automatically inject karta hai — agar "
+    "yeh missing hain toh ho sakta hai bot Railway pe deployed nahi hai, "
+    "ya inhe config.env mein manually overwrite kar diya gaya hai (agar "
+    "kiya hai toh woh lines hata do)."
 )
 
 
@@ -103,8 +111,11 @@ async def cmd_redeploy(client: Client, message: Message):
         return
 
     token, service_id, env_id = _railway_config()
-    if not (token and service_id and env_id):
+    if not token:
         await message.reply(_SETUP_INSTRUCTIONS, disable_web_page_preview=True)
+        return
+    if not (service_id and env_id):
+        await message.reply(_NOT_ON_RAILWAY_MESSAGE, disable_web_page_preview=True)
         return
 
     kb = InlineKeyboardMarkup([[
@@ -151,9 +162,14 @@ async def redeploy_callback(client: Client, cb: CallbackQuery):
             )
         except Exception:
             pass
-    elif info == "config_missing":
+    elif info == "token_missing":
         try:
             await cb.message.edit(_SETUP_INSTRUCTIONS, disable_web_page_preview=True)
+        except Exception:
+            pass
+    elif info == "not_on_railway":
+        try:
+            await cb.message.edit(_NOT_ON_RAILWAY_MESSAGE, disable_web_page_preview=True)
         except Exception:
             pass
     else:
